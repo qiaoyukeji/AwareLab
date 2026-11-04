@@ -1,0 +1,25 @@
+<template>
+  <svg class="lab-brand-mark" viewBox="0 0 64 64" role="img" aria-label="AwareLab">
+    <defs>
+      <linearGradient :id="gid" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#1c2b39" />
+        <stop offset="1" stop-color="#0d151d" />
+      </linearGradient>
+    </defs>
+    <rect x="1.5" y="1.5" width="61" height="61" rx="15" :fill="`url(#${gid})`" stroke="#0f766e" stroke-width="2" />
+    <g fill="none" stroke="#12897f" stroke-linecap="round">
+      <path d="M22 8a14 14 0 0 1-14 14" stroke-width="3.4" />
+      <path d="M29 8a21 21 0 0 1-21 21" stroke-width="2.6" />
+    </g>
+    <g fill="none" stroke="#ffffff" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="27" cy="15" r="3.4" />
+      <path d="M27 18.4V34a9.5 9.5 0 0 0 19 0v-4.5" />
+      <path d="M46 29.5 49.4 31.9" stroke-width="3.6" />
+    </g>
+  </svg>
+</template>
+
+<script setup>
+// 顶栏与登录页共用的品牌标记；渐变 id 每次实例化都不同，同页出现两个也不会串色
+const gid = `al-tile-${Math.random().toString(36).slice(2, 8)}`;
+</script>

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 76" role="img" aria-label="AwareLab 安全意识演练平台">
+  <g transform="translate(6 6)">
+    <rect x="1.5" y="1.5" width="61" height="61" rx="15" fill="#12897f"/>
+    <g fill="none" stroke="#0d151d" stroke-opacity="0.55" stroke-linecap="round">
+      <path d="M22 8a14 14 0 0 1-14 14" stroke-width="3.4"/>
+      <path d="M29 8a21 21 0 0 1-21 21" stroke-width="2.6"/>
+    </g>
+    <g fill="none" stroke="#ffffff" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="27" cy="15" r="3.4"/>
+      <path d="M27 18.4V34a9.5 9.5 0 0 0 19 0v-4.5"/>
+      <path d="M46 29.5 49.4 31.9" stroke-width="3.6"/>
+    </g>
+  </g>
+  <text x="78" y="42" font-family="Inter, 'Helvetica Neue', 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="29" font-weight="700" fill="#ffffff" letter-spacing="-0.4">Aware<tspan fill="#5eead4">Lab</tspan></text>
+  <text x="79" y="61" font-family="Inter, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif" font-size="12.5" fill="#93a1ae" letter-spacing="1.2">授权安全意识演练平台</text>
+</svg>

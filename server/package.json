@@ -1,0 +1,31 @@
+{
+  "name": "awarelab-server",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://gitee.com/qiaoyukeji/AwareLab.git"
+  },
+  "homepage": "https://gitee.com/qiaoyukeji/AwareLab",
+  "bugs": {
+    "url": "https://gitee.com/qiaoyukeji/AwareLab/issues"
+  },
+  "description": "AwareLab 安全意识演练平台 · 管理面 / 采集面 / 信标面 (仅用于授权范围内的安全意识演练)",
+  "main": "src/boot/main.js",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "start": "node src/boot/main.js",
+    "dev": "node --watch src/boot/main.js",
+    "test": "node scripts/selftest.mjs"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "js-yaml": "^4.1.0",
+    "multer": "^2.0.1",
+    "nodemailer": "^6.10.0"
+  }
+}

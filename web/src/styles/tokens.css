@@ -1,0 +1,57 @@
+/* AwareLab 设计令牌：石墨底色 + 竹青主色，紧边框、低圆角，区别于常见后台的圆角卡片风 */
+:root {
+  --lab-ink: #15202b;
+  --lab-ink-2: #2c3a48;
+  --lab-ink-3: #5c6b7a;
+  --lab-ink-4: #93a1ae;
+  --lab-line: #d9e1e8;
+  --lab-line-2: #eaf0f4;
+  --lab-fill: #eff3f6;
+  --lab-fill-2: #f7fafc;
+  --lab-surface: #ffffff;
+  --lab-accent: #0f766e;
+  --lab-accent-2: #12897f;
+  --lab-accent-soft: #e2f1ef;
+  --lab-warn: #a8600c;
+  --lab-warn-soft: #fbf1e0;
+  --lab-danger: #b02a37;
+  --lab-danger-soft: #fbe9eb;
+  --lab-ok: #14683a;
+  --lab-ok-soft: #e4f2e9;
+  --lab-r-sm: 3px;
+  --lab-r: 5px;
+  --lab-r-lg: 8px;
+  --lab-gap: 14px;
+  --lab-gap-sm: 8px;
+  --lab-top-h: 54px;
+  --lab-max: 1600px;
+
+  --el-color-primary: var(--lab-accent);
+  --el-color-primary-light-3: var(--lab-accent-2);
+  --el-color-primary-light-9: var(--lab-accent-soft);
+  --el-color-warning: var(--lab-warn);
+  --el-color-danger: var(--lab-danger);
+  --el-color-success: var(--lab-ok);
+  --el-border-radius-base: var(--lab-r);
+  --el-border-radius-small: var(--lab-r-sm);
+  --el-font-size-base: 13px;
+  --el-text-color-primary: var(--lab-ink-2);
+  --el-text-color-regular: var(--lab-ink-3);
+  --el-text-color-secondary: var(--lab-ink-4);
+  --el-border-color: var(--lab-line);
+  --el-border-color-light: var(--lab-line-2);
+  --el-fill-color-blank: var(--lab-surface);
+}
+
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+
+body {
+  background: var(--lab-fill);
+  color: var(--lab-ink-2);
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+a { color: var(--lab-accent); }
