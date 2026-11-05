@@ -28,6 +28,25 @@
 - 界面文案面向操作员，用大白话（钓鱼网站、上钩记录），不要学术黑话；新增工作区或改顶栏
   结构的提案请先开 Issue 讨论。
 
+## 本地版本管理
+
+仓库就在本机，不依赖远端：`main` 始终可运行，改动走短分支，验证绿了再合并。
+
+```bash
+git switch -c feat/sms-login        # 一个改动一个分支，名字用 feat/ fix/ docs/ 前缀
+# ...改代码、跑 lint 与 selftest...
+git add -A && git commit            # 提交信息第一行写"做了什么"，正文写"为什么"
+git switch main && git merge --no-ff feat/sms-login
+git tag -a v1.5.0 -m "账号体系 + 短信认证"   # 每次对外可用就打个注释标签
+```
+
+- 提交信息用中文，第一行不超过 50 字；`fix:` / `feat:` / `docs:` / `chore:` 前缀可选，
+  但同一次提交只做一件事（改版式就别顺手改协议）。
+- 发布前跑一遍 `node server/scripts/ci.mjs`；只改文档的提交至少跑 `git diff --check`。
+- `server/config.yaml`、`server/data/`、`web/dist/`、`*.log` 与 `.verify-*` 都在 `.gitignore` 里，
+  `git status` 里看到它们说明忽略规则被改坏了，先修 `.gitignore` 再提交。
+- 需要长期留档的演练数据不要塞进仓库：导出 CSV/报告后放仓库外，仓库只放代码与文档。
+
 ## 注释
 
 注释只干一件事：说清代码本身看不出来的约束。门禁为什么中性、端口为什么要分、口令为什么不
