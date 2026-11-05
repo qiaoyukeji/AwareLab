@@ -7,6 +7,8 @@ panel:
   port: 7778
   username: change-me
   password: change-me
+  bind: 127.0.0.1          # 默认只听本机；需要远程管理时才显式改写
+  trust_proxy: false       # 仅当管理面挂在 nginx 等反向代理后面才置 true，否则来源 IP 可被 X-Forwarded-For 伪造
 
 capture:
   port_range: [8000, 9999]   # 采集面允许占用的端口区间
@@ -18,5 +20,7 @@ mail:
 
 exercise:
   require_authorization: true      # 授权硬门禁：无生效授权时拒绝建站与投递，不提供在线关闭
+  retention_days: 180              # 上钩证据、事件与落盘产物的保留天数，0 表示不自动清理
+  audit_retention_days: 365        # 操作审计独立保留期，要比它记录的证据活得久
 
 session_ttl_hours: 12
