@@ -4,6 +4,20 @@
 [语义化版本](https://semver.org/lang/zh-CN/)。版本号以 `server/package.json` 与
 `web/package.json` 的 `version` 为准，两者始终保持一致。
 
+## [1.5.2] - 2026-11-06
+
+### 修复
+
+- **回退 1.5.1 的错误改法**：`TemplateParam` 在 `SendSmsVerifyCode` 里是**必填**参数，1.5.1 把
+  `code` 剔干净、没有其它变量时干脆不传，结果从「模板不匹配」变成 `MissingTemplateParam`
+  （`TemplateParam is mandatory for this action.`）。
+- 按阿里云官方约定改回并写死语义：`TemplateParam` 永远发送，`code` 必须固定为 `##code##`，
+  云端按 `CodeType` 生成真码替换占位、并在 `CheckSmsVerifyCode` 时认这个码；模板里其它变量
+  （如 `${min}`）原样保留并一起发送。传真实码会被自动改回 `##code##` 并提示。
+- 报 `isv.INVALID_PARAMETERS` 时，错误信息里直接带上本次发出的 `TemplateParam` 值，并提示
+  「模板除 `${code}` 外是否还有 `${min}` 等变量」，省去翻日志。
+- 界面默认值恢复为 `{"code":"##code##"}`，提示改为「code 固定 ##code##，其它变量一并写」。
+
 ## [1.5.1] - 2026-11-06
 
 ### 修复

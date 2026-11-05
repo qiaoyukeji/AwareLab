@@ -65,9 +65,11 @@ function startGateway() {
     calls.push({ action, query: Object.fromEntries(url.searchParams) });
     res.setHeader('content-type', 'application/json');
     if (action === 'SendSmsVerifyCode') {
-      // 模拟阿里云的真实校验：模板变量里出现字面量 ##code## 会被判「模板与参数不匹配」
-      const param = url.searchParams.get('TemplateParam') || '';
-      if (param.includes('##code##')) {
+      // 复刻阿里云的真实约束：TemplateParam 必填；code 必须是 ##code## 占位，否则云端不生成、也不认这个码
+      const param = url.searchParams.get('TemplateParam');
+      if (!param) {
+        res.end(JSON.stringify({ Code: 'MissingTemplateParam', Message: 'TemplateParam is mandatory for this action.' }));
+      } else if (!param.includes('"code":"##code##"')) {
         res.end(JSON.stringify({ Code: 'isv.INVALID_PARAMETERS', Message: '请检查模板内容与模板参数是否匹配' }));
       } else {
         res.end(JSON.stringify({ Code: 'OK', RequestId: `fake-${calls.length}`, Model: { BizId: 'fake-biz' } }));
@@ -165,7 +167,7 @@ async function main() {
           access_key_secret: 'fake-secret-value',
           sign_name: '远山科技',
           template_code: '100001',
-          template_param: '{"code":"##code##"}',
+          template_param: '{"code":"123456","min":"5"}',
           code_length: 6,
           valid_time: 300,
           interval_seconds: 30,
@@ -175,10 +177,10 @@ async function main() {
       adminToken
     );
     check('保存短信配置成功', saved.data?.enabled === true);
-    // 旧配置里的 {"code":"##code##"} 会被剔除并提示，避免阿里云回 isv.INVALID_PARAMETERS
-    check('模板参数里的 code 被提示忽略', /code/.test(String(saved.data?.warning || '')), saved.data?.warning || 'no warning');
+    // 真实码写进 code 会被云端当成固定值、校验时对不上；保存时就改回 ##code## 占位
+    check('模板参数里的真实码被自动改成占位', /code/.test(String(saved.data?.warning || '')), saved.data?.warning || 'no warning');
     const settings1 = await api('GET', '/settings', undefined, adminToken);
-    check('模板参数归一为空对象', settings1.data.sms.template_param === '{}', settings1.data.sms.template_param);
+    check('模板参数归一为 code=##code## 且保留其它变量', settings1.data.sms.template_param === '{"code":"##code##","min":"5"}', settings1.data.sms.template_param);
     check('AccessKey 以掩码回显', String(settings1.data.sms.access_key_id).endsWith('******'), settings1.data.sms.access_key_id);
     check('Secret 不回传明文', settings1.data.sms.access_key_secret === '******');
     check('配置齐全后 sms_ready 为 true', settings1.data.sms_ready === true);
@@ -203,8 +205,12 @@ async function main() {
     const lastSend = gateway.calls.filter((c) => c.action === 'SendSmsVerifyCode').at(-1);
     check('网关收到 SendSmsVerifyCode', lastSend?.query.PhoneNumber === PHONE, lastSend?.query.PhoneNumber);
     check('请求带签名与版本', Boolean(lastSend?.query.Signature) && lastSend?.query.Version === '2017-05-25');
-    // code 是云端生成的，绝不能再作为模板变量发出去（这正是 isv.INVALID_PARAMETERS 的根因）
-    check('未把 code 当模板变量发送', !String(lastSend?.query.TemplateParam || '').includes('code'), lastSend?.query.TemplateParam || '(空)');
+    // TemplateParam 是必填项：不传会回 MissingTemplateParam；code 必须是 ##code## 占位，云端才生成并认这个码
+    check(
+      'TemplateParam 必填且带 ##code## 占位',
+      String(lastSend?.query.TemplateParam || '') === '{"code":"##code##","min":"5"}',
+      lastSend?.query.TemplateParam || '(缺失)'
+    );
     const throttled = await api('POST', '/auth/sms/send', { ticket: bindTicket, phone: PHONE }, undefined, null);
     check('重发被限流', throttled.json.code === 429, throttled.json.message);
 

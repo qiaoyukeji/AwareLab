@@ -17,9 +17,10 @@ export const SMS_DEFAULT = {
   access_key_secret: '',
   sign_name: '',
   template_code: '',
-  // 验证码由阿里云生成并注入模板的 ${code}，本地再传 code 会让模板变量对不上（isv.INVALID_PARAMETERS）。
-  // 这里只放模板里的其它变量，例如 {"name":"张三"}；没有其它变量就留空对象。
-  template_param: '{}',
+  // 模板参数是必填项，且验证码必须用 ##code## 占位由云端生成：
+  // 传 `{}` 会回 MissingTemplateParam；传真实码则云端不认、CheckSmsVerifyCode 也校验不了。
+  // 模板里除 ${code} 之外的变量（如 ${min}）要一并写进来。
+  template_param: '{"code":"##code##"}',
   code_length: 6,
   valid_time: 300,
   // 同号 60 秒内重复请求直接拒绝（阿里云侧也有 Interval，这里先挡一层，省一次外呼）
@@ -29,27 +30,37 @@ export const SMS_DEFAULT = {
 };
 
 /**
- * 模板参数归一：必须是 JSON 对象；`code` 键一律剔除——验证码是云端生成的，
- * 客户端再传一个字面量 code 会触发「请检查模板内容与模板参数是否匹配」。
+ * 模板参数归一：必须是 JSON 对象，且 `code` 一律固定为 `##code##`。
+ *
+ * 阿里云号码认证的约定是：TemplateParam 必填，验证码变量用 `##code##` 占位，
+ * 云端按 CodeType 生成真码、替换占位、并在校验时认这个码。所以：
+ * - 传 `{}`（或干脆不传）→ MissingTemplateParam；
+ * - 传真实码 → 云端不生成，CheckSmsVerifyCode 也校验不了；
+ * - 模板里其它变量（如 ${min}）必须一起给，否则报「模板内容与模板参数不匹配」。
  */
 export function normalizeTemplateParam(raw) {
   const text = String(raw ?? '').trim();
-  if (!text) return { json: '{}', problem: null };
-  let value;
-  try {
-    value = JSON.parse(text);
-  } catch {
-    return { json: '{}', problem: '模板参数不是合法 JSON，已按空参数保存' };
+  let value = {};
+  let problem = null;
+  if (text) {
+    try {
+      value = JSON.parse(text);
+    } catch {
+      problem = '模板参数不是合法 JSON，已按 {"code":"##code##"} 保存';
+      value = {};
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      problem = '模板参数必须是 JSON 对象，已按 {"code":"##code##"} 保存';
+      value = {};
+    }
   }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return { json: '{}', problem: '模板参数必须是 JSON 对象，已按空参数保存' };
+  const hadCode = Object.prototype.hasOwnProperty.call(value, 'code');
+  const codeOk = String(value.code ?? '') === '##code##';
+  if (hadCode && !codeOk) {
+    problem = '模板参数里的 code 必须是 ##code##（云端据此生成验证码），已自动改正';
   }
-  const droppedCode = Object.prototype.hasOwnProperty.call(value, 'code');
-  delete value.code;
-  return {
-    json: JSON.stringify(value),
-    problem: droppedCode ? '模板参数里的 code 已忽略：验证码由阿里云生成，模板里写 ${code} 即可' : null,
-  };
+  value.code = '##code##';
+  return { json: JSON.stringify(value), problem };
 }
 
 /** 合并默认值：老配置缺字段时补默认，避免界面读到 undefined。 */
@@ -196,19 +207,33 @@ async function callRpc(action, bizParams, cfg) {
 export async function sendVerifyCode(phone, cfg = smsConfig()) {
   const problem = smsReadyProblem(cfg);
   if (problem) throw new Error(`短信认证未配置完整：${problem}`);
-  // 兼容旧配置：库里可能还存着 {"code":"##code##"}，发码时再归一一次，避免必须回后台改一遍才生效
+  // 老配置可能存着 {}、或存着真实码：发码前统一改写成 {"code":"##code##", ...其它变量}
   const templateParam = normalizeTemplateParam(cfg.template_param).json;
   const bizParams = {
     PhoneNumber: phone,
     SignName: cfg.sign_name,
     TemplateCode: cfg.template_code,
+    // 必填：不传直接回 MissingTemplateParam，传 {} 同样不认
+    TemplateParam: templateParam,
     CodeLength: String(cfg.code_length),
     ValidTime: String(cfg.valid_time),
     Interval: String(cfg.interval_seconds),
   };
-  // 模板没有其它变量时整个参数都不传：空对象同样会被判「参数与模板不匹配」
-  if (templateParam && templateParam !== '{}') bizParams.TemplateParam = templateParam;
-  const body = await callRpc('SendSmsVerifyCode', bizParams, cfg);
+  if (cfg.scheme_name) bizParams.SchemeName = cfg.scheme_name;
+  let body;
+  try {
+    body = await callRpc('SendSmsVerifyCode', bizParams, cfg);
+  } catch (error) {
+    // 模板与参数对不上是最容易踩的坑：把实际发出去的参数原样带回来，省得再去翻日志
+    if (/INVALID_PARAMETERS|模板|TemplateParam/i.test(error.message)) {
+      throw new Error(
+        `阿里云判定模板与参数不匹配（${error.message}）。本次 TemplateParam=${templateParam}；` +
+          `请核对模板 ${cfg.template_code} 的变量：除 \${code} 外若还有 \${min} 等，需要一并写进「模板参数」`,
+        { cause: error }
+      );
+    }
+    throw error;
+  }
   return { request_id: body.RequestId || body.Model?.RequestId || '', model: body.Model || {} };
 }
 
