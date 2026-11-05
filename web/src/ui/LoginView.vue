@@ -27,15 +27,21 @@
         <div class="gate-sms-hd">
           <el-icon><Cellphone /></el-icon>
           <div>
-            <b>{{ purpose === 'bind' ? '绑定手机号' : '短信验证' }}</b>
-            <small v-if="purpose === 'bind'">首次登录需要先绑定手机号，验证码会发到该号码</small>
+            <b>{{ purpose === 'bind' ? '验证手机号' : '短信验证' }}</b>
+            <small v-if="purpose === 'bind' && hasStoredPhone">管理员已登记 {{ maskedPhone }}，验证码发到这个号；验证通过后不再需要每次输号</small>
+            <small v-else-if="purpose === 'bind'">首次登录需要先绑定手机号，验证码会发到该号码</small>
             <small v-else>验证码已发送至 {{ maskedPhone }}，{{ validMinutes }} 分钟内有效</small>
           </div>
         </div>
 
         <el-form label-position="top" @submit.prevent="verify">
           <el-form-item v-if="purpose === 'bind'" label="手机号">
-            <el-input v-model="form.phone" maxlength="11" placeholder="11 位手机号" @keyup.enter="sendCode" />
+            <!-- 管理员建号时已登记号码：直接沿用，避免再手输一遍；要换号才展开输入框 -->
+            <div v-if="hasStoredPhone && !useNewPhone" class="gate-phone-fixed">
+              <b>{{ maskedPhone }}</b>
+              <el-button text size="small" @click="switchPhone">换一个号码</el-button>
+            </div>
+            <el-input v-else v-model="form.phone" maxlength="11" placeholder="11 位手机号" @keyup.enter="sendCode" />
           </el-form-item>
           <el-form-item label="验证码">
             <div class="gate-code">
@@ -93,10 +99,14 @@ const purpose = ref('login');
 const maskedPhone = ref('');
 const validMinutes = ref(5);
 const countdown = ref(0);
+// 管理员建号时可能已登记手机号：默认沿用，用户点「换一个号码」才展开输入框
+const useNewPhone = ref(false);
 const form = reactive({ username: '', password: '', phone: '', code: '' });
 let timer = null;
 
-const phoneReady = computed(() => purpose.value !== 'bind' || /^1[3-9]\d{9}$/.test(form.phone));
+const hasStoredPhone = computed(() => purpose.value === 'bind' && Boolean(maskedPhone.value));
+const needPhoneInput = computed(() => purpose.value === 'bind' && (!hasStoredPhone.value || useNewPhone.value));
+const phoneReady = computed(() => !needPhoneInput.value || /^1[3-9]\d{9}$/.test(form.phone));
 
 /** 重发倒计时：后端 interval_seconds 是权威值，这里只做按钮可用性，不做安全判定。 */
 function startCountdown(seconds) {
@@ -110,14 +120,27 @@ function startCountdown(seconds) {
 
 onBeforeUnmount(() => clearInterval(timer));
 
-/** 进入第二步：bind 场景不自动发码（还没填号），login 场景直接发。 */
+/** 进入第二步：bind 场景不自动发码（还没确认号码），login 场景直接发。 */
 async function enterSms(data) {
   ticket.value = data.ticket;
   purpose.value = data.purpose === 'bind' ? 'bind' : 'login';
   maskedPhone.value = data.phone_masked || '';
   step.value = 'sms';
   form.code = '';
-  if (purpose.value === 'login') await sendCode();
+  form.phone = '';
+  useNewPhone.value = false;
+  // 号已定（已绑定或管理员预填）就直接发码，不用再点一次「获取验证码」
+  if (purpose.value === 'login' || hasStoredPhone.value) await sendCode();
+}
+
+/** 换号：清空输入，走「填写新号码」分支；新号同样要过验证码才生效。 */
+function switchPhone() {
+  useNewPhone.value = true;
+  form.phone = '';
+  form.code = '';
+  maskedPhone.value = '';
+  countdown.value = 0;
+  clearInterval(timer);
 }
 
 /**
@@ -138,13 +161,13 @@ async function submit() {
   }
 }
 
-/** 发码 / 重发：bind 场景必须带手机号；login 场景后端只认票据里的号。 */
+/** 发码 / 重发：有已登记号码时后端直接用票据里的号；换号或从未登记才把输入框的值带上。 */
 async function sendCode() {
   if (sending.value || countdown.value > 0) return;
   if (!phoneReady.value) return ElMessage.warning('请输入正确的 11 位手机号');
   sending.value = true;
   try {
-    const data = await session.sendSmsCode(ticket.value, purpose.value === 'bind' ? form.phone : '');
+    const data = await session.sendSmsCode(ticket.value, needPhoneInput.value ? form.phone : '');
     maskedPhone.value = data.phone_masked || maskedPhone.value;
     validMinutes.value = Math.max(1, Math.round((data.valid_time || 300) / 60));
     startCountdown(data.interval_seconds || 60);
@@ -161,7 +184,7 @@ async function verify() {
   if (!/^\d{4,8}$/.test(form.code)) return ElMessage.warning('请输入短信里的数字验证码');
   verifying.value = true;
   try {
-    await session.verifySmsCode(ticket.value, form.code, purpose.value === 'bind' ? form.phone : '');
+    await session.verifySmsCode(ticket.value, form.code, needPhoneInput.value ? form.phone : '');
     router.replace(route.query.redirect || '/console');
   } catch (err) {
     ElMessage.error(err.message);
@@ -174,6 +197,8 @@ function backToAccount() {
   step.value = 'account';
   ticket.value = '';
   form.code = '';
+  form.phone = '';
+  useNewPhone.value = false;
   clearInterval(timer);
   countdown.value = 0;
 }
@@ -208,9 +233,21 @@ function backToAccount() {
 .gate-sms-hd .el-icon { color: var(--lab-accent); font-size: 18px; margin-top: 2px; }
 .gate-sms-hd b { display: block; font-size: 13.5px; color: var(--lab-ink); }
 .gate-sms-hd small { display: block; font-size: 12px; color: var(--lab-ink-3); line-height: 1.6; margin-top: 2px; }
-.gate-code { display: flex; gap: 8px; width: 100%; }
-.gate-code .el-input { flex: 1; }
+.gate-code { display: flex; gap: 8px; width: 100%; }.gate-code .el-input { flex: 1; }
 .gate-code .el-button { flex: none; width: 116px; }
+/* 已登记号码：只读展示 + 换号入口，占位高度与 el-input 对齐 */
+.gate-phone-fixed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  height: 32px;
+  padding: 0 11px;
+  background: var(--lab-fill);
+  border: 1px solid var(--lab-line);
+  border-radius: var(--lab-r-sm);
+}
+.gate-phone-fixed b { font-family: var(--lab-mono, ui-monospace), monospace; letter-spacing: 0.5px; }
 .gate-rules { list-style: none; margin: 20px 0 0; padding: 12px 0 0; border-top: 1px dashed var(--lab-line); }
 .gate-rules li { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--lab-ink-3); padding: 3px 0; }
 .gate-rules .el-icon { color: var(--lab-accent); }

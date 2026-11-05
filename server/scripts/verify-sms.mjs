@@ -200,10 +200,11 @@ async function main() {
     const bindTicket = bindStep.data.ticket;
 
     // 6) 发码：走假网关，且 30 秒内重发被限流
-    const sent = await api('POST', '/auth/sms/send', { ticket: bindTicket, phone: PHONE });
+    //    不传 phone：管理员建号时已登记号码，后端应直接用票据里的号，前端不该再让人输一遍
+    const sent = await api('POST', '/auth/sms/send', { ticket: bindTicket });
     check('发送绑定验证码', sent.data?.sent === true);
     const lastSend = gateway.calls.filter((c) => c.action === 'SendSmsVerifyCode').at(-1);
-    check('网关收到 SendSmsVerifyCode', lastSend?.query.PhoneNumber === PHONE, lastSend?.query.PhoneNumber);
+    check('未传 phone 时沿用管理员登记号码', lastSend?.query.PhoneNumber === PHONE, lastSend?.query.PhoneNumber);
     check('请求带签名与版本', Boolean(lastSend?.query.Signature) && lastSend?.query.Version === '2017-05-25');
     // TemplateParam 是必填项：不传会回 MissingTemplateParam；code 必须是 ##code## 占位，云端才生成并认这个码
     check(
