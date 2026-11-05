@@ -12,6 +12,8 @@ import { mountBeaconPlane } from '../channels/beaconPlane.js';
 import { mountAdminPlane } from '../channels/adminPlane.js';
 import { restoreSites, stopAllSites } from '../capture/siteRegistry.js';
 import { startMaintenanceTimer } from '../platform/maintenance.js';
+import { seedBuiltins } from '../library/seed.js';
+import { ensureAdminUser } from '../security/users.js';
 
 // 横幅第一行；改名要同步 README、docs/使用手册.md 与前端标题
 const BANNER = 'AwareLab 安全意识演练平台';
@@ -30,6 +32,23 @@ if (FATAL) {
 /** 管理面监听地址：缺本机，放开到别的网卡要操作员在配置里写明白 */
 // 再兜一次 127.0.0.1：配置写成 null/空串时不能让管理面悄悄变成全网卡监听
 const PANEL_BIND = config.panel.bind || '127.0.0.1';
+
+// 内置素材播种：必须在建监听之前跑完，操作员第一次打开素材页就能看到页面/邮件模板。
+// 幂等（按 builtin_key 判存在，已有行不覆盖），重复启动只会多一行"已就绪"；失败不能拦住启动，
+// 素材缺失只是少几个模板，比整个平台起不来轻得多，所以这里只告警不抛。
+try {
+  seedBuiltins();
+} catch (error) {
+  console.warn(`[library] 内置素材写入失败（不影响启动）：${error.message}`);
+}
+
+// 管理员种子：users 表为空时用 config.yaml 的 panel 账号建第一个管理员（口令按 scrypt 哈希落库）。
+// 幂等：已有启用管理员就直接返回，不会覆盖操作员后来改的口令；失败同样只告警不拦启动。
+try {
+  ensureAdminUser();
+} catch (error) {
+  console.warn(`[users] 管理员账号初始化失败（不影响启动）：${error.message}`);
+}
 
 /**
  * 进程装配：一条端口上并行管理面（随机路径+会话）、信标面（公开无鉴权）、采集面（各授权端口独立监听）。

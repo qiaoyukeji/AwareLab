@@ -27,8 +27,9 @@
         <span class="lab-strong">模型服务</span>
         <span class="lab-hint">兼容 OpenAI Chat Completions 协议的任意服务（DeepSeek、阿里云百炼、硅基流动、MiniMax 等），用于网站素材的生成辅助。</span>
       </div>
-      <!-- 表格只做展示、编辑走抽屉；增删改只在内存里，按保存模型服务才整包 PUT 落库 -->
-      <el-table :data="ai.providers" size="small">
+      <!-- 表格只做展示、编辑走抽屉；增删改只在内存里，按保存模型服务才整包 PUT 落库。
+           空表直接换成一行虚线提示：留一个空表头再留半屏空白，看着像没加载出来 -->
+      <el-table v-if="ai.providers.length" :data="ai.providers" size="small">
         <el-table-column prop="name" label="厂商名称" min-width="110" />
         <el-table-column prop="base_url" label="接口地址" min-width="200" show-overflow-tooltip />
         <el-table-column prop="model" label="模型" min-width="120" show-overflow-tooltip />
@@ -44,7 +45,7 @@
         </el-table-column>
       </el-table>
       <!-- 空列表是正常状态：不配外部模型，手写模板与新建假登录页照样能跑完整演练 -->
-      <div v-if="!ai.providers.length" class="lab-empty">还没有模型服务配置项，可直接新建假登录页模板替代。</div>
+      <div v-else class="config-empty">还没有模型服务配置项，点下方「新增厂商」添加；也可以不配，直接用假登录页模板。</div>
       <div class="lab-toolbar" style="margin-top: 12px; margin-bottom: 0">
         <el-button size="small" @click="createProvider">新增厂商</el-button>
         <span class="lab-spacer" />
@@ -62,8 +63,9 @@
         <el-switch v-model="push.enabled" active-text="启用事件推送" />
       </template>
 
-      <!-- 通道表是整表替换：行内删除只 splice 内存，保存时全量 PUT，服务端不做逐行 diff -->
-      <el-table :data="push.channels" size="small">
+      <!-- 通道表是整表替换：行内删除只 splice 内存，保存时全量 PUT，服务端不做逐行 diff。
+           空表同样是正常态（多数演练不接机器人），走一行虚线提示，不留空表体 -->
+      <el-table v-if="push.channels.length" :data="push.channels" size="small">
         <el-table-column label="类型" width="110">
           <template #default="{ row }">{{ CHANNEL_LABEL[row.type] || row.type }}</template>
         </el-table-column>
@@ -82,7 +84,7 @@
           </template>
         </el-table-column>
       </el-table>
-      <div v-if="!push.channels.length" class="lab-empty">尚未配置通知通道。</div>
+      <div v-else class="config-empty">尚未配置通知通道，需要时点下方「新增通道」；不配置不影响演练与取证。</div>
       <div class="lab-toolbar" style="margin-top: 12px; margin-bottom: 0">
         <el-button size="small" @click="createChannel">新增通道</el-button>
         <span class="lab-spacer" />
@@ -96,6 +98,106 @@
         脱敏推送开启时，消息里的员工邮箱换成不可逆短代号（同一个人每次相同，便于对上号），提交的字段名只报数量。
         关掉它就等于把「谁在什么时间上钩、交了哪些栏位」原样寄给第三方 IM 群，请确认群成员范围后再关。
         机器人地址走明文 http 会被拒绝，本机回环（127.0.0.1）除外，方便本地联调。
+      </p>
+    </LabPane>
+
+    <!-- 短信认证 -->
+    <!-- 阿里云号码认证服务（Dypnsapi，SendSmsVerifyCode / CheckSmsVerifyCode）。开关落 settings.sms，保存即刻生效。
+         只拦普通用户：管理员是后台兜底入口，密钥过期或欠费时也必须进得来。
+         密钥走掩码回传：眼睛看到的星号原样存回等于不修改，只有真的换了串才会覆盖。 -->
+    <LabPane title="短信认证" hint="阿里云号码认证服务：普通用户登录时校验手机验证码；管理员账号不受影响">
+      <template #ops>
+        <el-switch v-model="sms.enabled" active-text="启用短信认证" />
+      </template>
+
+      <el-alert
+        v-if="sms.enabled && !smsReady"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="sms-alert"
+        title="短信认证还没法启用"
+        :description="smsReadyReason || 'AccessKey、签名或模板没配齐，普通用户当前仍按口令登录。'"
+      />
+
+      <el-form label-position="top" class="sms-form" autocomplete="off">
+        <div class="sms-grid">
+          <el-form-item label="AccessKey ID">
+            <el-input
+              v-model="sms.access_key_id"
+              name="alab-sms-key-id"
+              autocomplete="off"
+              placeholder="LTAI 开头的 AccessKey ID"
+            />
+            <p class="lab-hint is-mute">从 RAM 控制台复制，形如 <code>LTAI5t…</code>；不要填本平台的登录账号。</p>
+          </el-form-item>
+          <el-form-item label="AccessKey Secret">
+            <el-input
+              v-model="sms.access_key_secret"
+              name="alab-sms-key-secret"
+              autocomplete="new-password"
+              type="password"
+              show-password
+              placeholder="留空表示沿用已保存的密钥"
+            />
+            <p class="lab-hint is-mute">30 位密钥，不是后台口令；浏览器提示保存密码时请选“从不”。</p>
+          </el-form-item>
+          <el-form-item label="短信签名">
+            <el-input v-model="sms.sign_name" placeholder="控制台审核通过的签名，如：远山科技" />
+          </el-form-item>
+          <el-form-item label="模板 CODE">
+            <el-input v-model="sms.template_code" placeholder="验证码模板 CODE，如：100001" />
+          </el-form-item>
+          <el-form-item label="验证码位数">
+            <el-input-number v-model="sms.code_length" :min="4" :max="8" controls-position="right" />
+          </el-form-item>
+          <el-form-item label="有效期（秒）">
+            <el-input-number v-model="sms.valid_time" :min="60" :max="1800" :step="30" controls-position="right" />
+          </el-form-item>
+          <el-form-item label="重发间隔（秒）">
+            <el-input-number v-model="sms.interval_seconds" :min="30" :max="600" :step="10" controls-position="right" />
+          </el-form-item>
+          <el-form-item label="模板参数（必填，code 固定 ##code##）">
+            <el-input v-model="sms.template_param" placeholder='{"code":"##code##"}' />
+            <p class="lab-hint is-mute">
+              验证码变量固定写 <code>##code##</code>，由云端生成后替换；模板里若还有 <code>${min}</code> 这类变量，一并写进来，例如
+              <code>{"code":"##code##","min":"5"}</code>。只写变量名不够，模板正文的变量必须全部给值。
+            </p>
+          </el-form-item>
+        </div>
+
+        <el-collapse class="sms-adv">
+          <el-collapse-item title="高级：网关地址与方案名（联调或专属网关才需要改）" name="adv">
+            <div class="sms-grid">
+              <el-form-item label="网关地址">
+                <el-input v-model="sms.endpoint" placeholder="dypnsapi.aliyuncs.com" />
+                <div class="lab-hint is-mute" style="margin-top: 4px">只接受 https；本机回环（127.0.0.1）可用 http 便于联调。</div>
+              </el-form-item>
+              <el-form-item label="方案名 SchemeName">
+                <el-input v-model="sms.scheme_name" placeholder="可留空；按阿里云控制台的方案名填写" />
+              </el-form-item>
+            </div>
+          </el-collapse-item>
+        </el-collapse>
+      </el-form>
+
+      <div class="lab-toolbar" style="margin-top: 12px; margin-bottom: 0">
+        <span class="lab-hint is-mute">
+          密钥仅以掩码回显；开关与配置保存后立即生效，无需重启。
+        </span>
+        <span class="lab-spacer" />
+        <el-button type="primary" size="small" :loading="saving === 'sms'" @click="save('sms')">保存短信配置</el-button>
+      </div>
+
+      <p class="lab-hint is-mute" style="margin: 12px 0 0">
+        开启后：普通用户登录除账号口令外还要输入短信验证码；未绑定手机号的账号会先要求绑定（管理员也可在「账号管理」里预填号码）。
+        管理员账号始终只验口令，避免短信服务异常时把后台锁死。
+      </p>
+      <p class="lab-hint is-mute" style="margin: 6px 0 0">
+        接口文档：阿里云号码认证服务
+        <a class="sms-link" href="https://next.api.aliyun.com/document/Dypnsapi/2017-05-25/SendSmsVerifyCode" target="_blank" rel="noreferrer">SendSmsVerifyCode</a>
+        ／
+        <a class="sms-link" href="https://next.api.aliyun.com/document/Dypnsapi/2017-05-25/CheckSmsVerifyCode" target="_blank" rel="noreferrer">CheckSmsVerifyCode</a>。
       </p>
     </LabPane>
 
@@ -427,6 +529,23 @@ const CHANNEL_LABEL = { dingtalk: '钉钉', wecom: '企业微信', feishu: '飞�
 const ai = reactive({ providers: [] });
 // 推送设置：enabled 默认关、redact 默认开，默认不向第三方群推、推出去的必须脱敏
 const push = reactive({ enabled: false, channels: [], redact: true });
+// 短信认证：enabled 默认关；密钥由后端掩码回传，留空/保留星号都表示「不修改已保存的密钥」
+const sms = reactive({
+  enabled: false,
+  access_key_id: '',
+  access_key_secret: '',
+  sign_name: '',
+  template_code: '',
+  template_param: '{"code":"##code##"}',
+  code_length: 6,
+  valid_time: 300,
+  interval_seconds: 60,
+  endpoint: 'dypnsapi.aliyuncs.com',
+  scheme_name: '',
+});
+// 短信认证的「能不能真发」由后端判定（缺字段、AK 格式不对、Secret 太短都算没配好），这里只负责显示
+const smsReady = ref(true);
+const smsReadyReason = ref('');
 // config.yaml 的只读回显值（panel_path / panel_port / capture_port_range / mail_default_dry_run / db_*）
 const info = ref({});
 // 正在保存哪一节（'ai' | 'push' | ''）：只用来把对应那颗按钮压成 loading，另一节不受影响
@@ -453,6 +572,11 @@ async function load() {
   const data = await http.get('/settings');
   Object.assign(ai, { providers: data.ai?.providers || [] });
   Object.assign(push, { enabled: !!data.push?.enabled, channels: data.push?.channels || [], redact: data.push?.redact !== false });
+  // 短信配置整包回填：密钥是掩码串，显示出来即可，保存时后端按「带星号 = 不改」处理
+  if (data.sms) Object.assign(sms, data.sms);
+  // sms_ready 由后端按「缺字段 / AK 格式 / Secret 长度」判定，这里连同原因一起收下，直接显示在开关下方
+  smsReady.value = data.sms_ready !== false;
+  smsReadyReason.value = data.sms_ready_reason || '';
   // 整包留一份原始响应：config.yaml 的只读值都在这一层，页面只读展示
   info.value = data;
 }
@@ -528,10 +652,23 @@ function applyDraft() {
 async function save(key) {
   saving.value = key;
   try {
-    await http.put(`/settings/${key}`, {
-      value: key === 'ai' ? { providers: ai.providers } : { enabled: push.enabled, channels: push.channels, redact: push.redact },
-    });
-    ElMessage.success('已保存');
+    const payload =
+      key === 'ai'
+        ? { providers: ai.providers }
+        : key === 'push'
+          ? { enabled: push.enabled, channels: push.channels, redact: push.redact }
+          : { ...sms };
+    const data = await http.put(`/settings/${key}`, { value: payload });
+    // 短信保存后会回整包掩码配置：回填一次，让刚填的明文密钥立刻变回星号
+    if (key === 'sms') {
+      Object.assign(sms, data);
+      // 保存响应只有掩码配置，ready 要重新问一次后端（AK 格式、Secret 长度都由它判）
+      await load();
+      if (data.warning) ElMessage.warning(data.warning);
+      else ElMessage.success(sms.enabled ? '已保存，短信认证已开启' : '已保存');
+    } else {
+      ElMessage.success('已保存');
+    }
   } catch (err) {
     ElMessage.error(err.message);
   } finally {
@@ -814,4 +951,28 @@ onMounted(() => {
 .gap-b { margin-bottom: 10px; }
 /* 清理结果与上面的状态区隔开一条线：这两块数字很容易看串，试算的 pending 尤其像状态里的 pending */
 .sweep-box { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--lab-line-2); }
+/* 空表只留一行虚线提示：Element 默认空态块高 60px 再加一句「暂无数据」，与下方行动指引叠成两段空白，
+   看起来像加载失败；空表时直接不渲染表体，指引由 .config-empty 给 */
+.config-empty {
+  margin: 10px 0 0;
+  padding: 14px 16px;
+  border: 1px dashed var(--lab-line);
+  border-radius: var(--lab-radius);
+  background: var(--lab-fill-2);
+  color: var(--lab-ink-3);
+  font-size: 12.5px;
+}
+
+/* 短信配置：两列栅格，窄屏收成一列；输入宽度跟格子走，不要撑满整块面板 */
+.sms-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0 16px;
+}
+.sms-grid :deep(.el-input-number) { width: 100%; }
+.sms-alert { margin-bottom: 12px; }
+.sms-adv { margin-top: 4px; border-top: 1px dashed var(--lab-line-2); border-bottom: none; }
+.sms-adv :deep(.el-collapse-item__header) { font-size: 12.5px; color: var(--lab-ink-3); background: transparent; }
+.sms-adv :deep(.el-collapse-item__wrap) { background: transparent; }
+.sms-link { color: var(--lab-accent); }
 </style>

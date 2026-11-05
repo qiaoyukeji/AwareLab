@@ -20,7 +20,9 @@ const WORKSPACES = [
   { path: 'capture', title: '钓鱼网站', file: 'CaptureWorkspace' },
   { path: 'outbound', title: '钓鱼邮件', file: 'OutboundWorkspace' },
   { path: 'evidence', title: '上钩记录', file: 'EvidenceWorkspace' },
-  { path: 'platform', title: '系统设置', file: 'PlatformWorkspace' },
+  // 系统设置与账号管理只给管理员：后端对 /settings 与 /users 都挂了 requireAdmin，普通用户进来只会看到一片 403
+  { path: 'platform', title: '系统设置', file: 'PlatformWorkspace', admin: true },
+  { path: 'accounts', title: '账号管理', file: 'AccountsWorkspace', admin: true },
 ];
 
 /**
@@ -37,15 +39,17 @@ const routes = [
         path: w.path,
         // name 取自 path：beforeEach 用 { name: 'console' } 回跳靠的就是这个约定
         name: w.path,
-        meta: { title: w.title },
+        meta: { title: w.title, admin: Boolean(w.admin) },
         // 模板串的前缀 '../workspaces/' 与后缀 '.vue' 必须是字面量：Vite 靠它切按需 chunk，整段塞进变量里构建期分析不出来、运行时会 404
         component: () => import(`../workspaces/${w.file}.vue`),
       })),
       { path: '', redirect: '/console' },
     ],
   },
-  // 观测视图脱离管理端外壳，单独占满整屏
+  // 观测视图脱离管理端外壳，单独占满整屏；总屏之外，每个站点与每个发送任务各有一条深链
   { path: '/screen', name: 'screen', meta: { title: '观测视图' }, component: () => import('../workspaces/ScreenView.vue') },
+  { path: '/screen/site/:id', name: 'screen-site', meta: { title: '站点大屏' }, component: () => import('../workspaces/ScreenView.vue') },
+  { path: '/screen/task/:id', name: 'screen-task', meta: { title: '任务大屏' }, component: () => import('../workspaces/ScreenView.vue') },
   { path: '/:pathMatch(.*)*', redirect: '/console' },
 ];
 
@@ -53,12 +57,14 @@ const router = createRouter({ history: createWebHashHistory(), routes });
 
 /**
  * 进路由前的本地闸门：只看本机有没有令牌，不发请求、不验有效期。
- * 未登录去任何页 → 登录页并带 ?redirect=原路径（登录成功后据此送回）；已登录还去登录页 → 演练总览。越权拦截在后端。
+ * 未登录去任何页 → 登录页并带 ?redirect=原路径（登录成功后据此送回）；已登录还去登录页 → 演练总览。
+ * 管理员页再做一道本地角色过滤：普通用户手敲 #/accounts 也不该进得去（真正的拦截仍在后端）。
  */
 router.beforeEach((to) => {
   const authed = !!readToken();
   if (!authed && to.name !== 'login') return { name: 'login', query: { redirect: to.fullPath } };
   if (authed && to.name === 'login') return { name: 'console' };
+  if (authed && to.meta?.admin && localStorage.getItem('alab_role') !== 'admin') return { name: 'console' };
   return true;
 });
 

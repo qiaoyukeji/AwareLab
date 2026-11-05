@@ -9,7 +9,7 @@ import { all, get, insert, nowIso, pagedRows, run, update } from '../platform/st
 import { ok, badRequest, notFound, paginate } from '../platform/net/envelope.js';
 import { assertDeployment, findActive } from '../security/mandate.js';
 import { writeAudit } from '../security/audit.js';
-import { publicBase } from '../mail/composer.js';
+import { mailBase, needsSite, taskSiteOrigin } from '../mail/composer.js';
 import { deliverCampaign, resendRecipient } from '../mail/campaignRunner.js';
 
 export const campaignApi = express.Router();
@@ -31,7 +31,8 @@ function statusCounts(taskId) {
   };
 }
 
-// 收件人按行导入，支持 recipients 数组或 text 多行串；行切分认 \r\n 与 \n（Windows 剪贴板带 \r），列认逗号/分号/制表符。
+// 收件人按行导入，支持 recipients 数组或 text 多行串；行切分认 \r\n 与 \n（Windows 剪贴板带 \r），
+// 列认逗号/分号/制表符/空白（界面上写的「邮箱 姓名」是空格分隔，从表格里粘出来往往是制表符）。
 function parseRecipients(body) {
   if (Array.isArray(body.recipients)) {
     return body.recipients.map((r) => ({ email: r.email || r.address, name: r.name || '' }));
@@ -41,7 +42,13 @@ function parseRecipients(body) {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => {
-      const [email, name] = line.split(/[,;\t]/).map((s) => (s || '').trim());
+      let parts = line.split(/[,;\t]/);
+      // 没有逗号/分号/制表符时按空白切：邮箱本身不含空格，第一段必然是邮箱，其余拼回姓名（姓名里常有空格）
+      if (parts.length === 1) {
+        const spaceAt = line.search(/\s/);
+        parts = spaceAt < 0 ? [line] : [line.slice(0, spaceAt), line.slice(spaceAt).trim()];
+      }
+      const [email, name] = parts.map((s) => (s || '').trim());
       // 只取前两段：粘贴里多带的第三列（部门之类）静默丢掉，不因此报废整行
       return { email, name };
     });
@@ -92,6 +99,8 @@ campaignApi.post('/mail-tasks', (req, res) => {
     id: crypto.randomUUID(),
     title: b.title,
     mail_template_id: b.mail_template_id || null,
+    // 绑定的仿冒站决定邮件里像素、{{site_url}} 与跳转落在哪个端口；不绑时由 composer 取唯一在听站点兜底
+    site_id: b.site_id || null,
     subject: b.subject,
     body_html: b.body_html,
     attachment_name: null,
@@ -119,8 +128,8 @@ campaignApi.put('/mail-tasks/:id', (req, res) => {
   // 先留 dry_run 旧值：翻转判定要拿"改前 vs 改后"对比，改完再查就看不出来过
   const before = get('SELECT dry_run FROM mail_tasks WHERE id=?', [req.params.id]);
   const patch = { updated_at: nowIso() };
-  // 只收白名单六列：授权绑定、状态这类字段不接受从这里改，防止绕过创建路径换授权
-  for (const key of ['title', 'subject', 'body_html', 'mail_template_id', 'smtp_profile_id', 'sender']) {
+  // 只收白名单这几列：授权绑定、状态这类字段不接受从这里改，防止绕过创建路径换授权
+  for (const key of ['title', 'subject', 'body_html', 'mail_template_id', 'smtp_profile_id', 'sender', 'site_id']) {
     if (b[key] !== undefined) patch[key] = b[key] || null;
   }
   if (b.send_interval_ms !== undefined) patch.send_interval_ms = Number(b.send_interval_ms) || 0;
@@ -202,8 +211,12 @@ campaignApi.post('/mail-tasks/:id/send', async (req, res) => {
   if (!get('SELECT COUNT(*) AS n FROM mail_recipients WHERE task_id=?', [task.id]).n) {
     return badRequest(res, '请先导入收件人');
   }
+  // 正文里写了 {{site_url}} 却没绑站点时，发出去会退回管理端地址（也就是操作员报的 7778 问题），在这里直接拦下
+  if (needsSite(task) && !taskSiteOrigin(task)) {
+    return badRequest(res, '正文使用了 {{site_url}}，请先给任务绑定一个开启中的钓鱼网站，或直接保存为草稿稍后再发');
+  }
   try {
-    const result = await deliverCampaign(task.id, { base: publicBase(req) });
+    const result = await deliverCampaign(task.id, { base: mailBase(task, req) });
     writeAudit(req, result.dry_run ? 'mail_task.sandbox_send' : 'mail_task.real_send', {
       targetKind: 'mail_task',
       targetId: task.id,
@@ -222,8 +235,10 @@ campaignApi.post('/mail-tasks/:id/recipients/:rid/resend', async (req, res) => {
   if (!get('SELECT 1 AS x FROM mail_recipients WHERE id=? AND task_id=?', [req.params.rid, req.params.id])) {
     return notFound(res, '收件人不存在');
   }
+  const task = get('SELECT * FROM mail_tasks WHERE id=?', [req.params.id]);
+  if (!task) return notFound(res, '任务不存在');
   try {
-    ok(res, await resendRecipient(req.params.id, req.params.rid, { base: publicBase(req) }));
+    ok(res, await resendRecipient(req.params.id, req.params.rid, { base: mailBase(task, req) }));
   } catch (err) {
     badRequest(res, err.message);
   }

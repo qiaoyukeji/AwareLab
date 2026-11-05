@@ -1,6 +1,6 @@
 {
   "name": "awarelab-server",
-  "version": "1.2.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
@@ -12,7 +12,7 @@
   "bugs": {
     "url": "https://gitee.com/qiaoyukeji/AwareLab/issues"
   },
-  "description": "AwareLab 安全意识演练平台 · 管理面 / 采集面 / 信标面 (仅用于授权范围内的安全意识演练)",
+  "description": "AwareLab 安全意识演练平台 · 管理面 / 采集面 / 信标面（仅用于授权范围内的安全意识演练）",
   "main": "src/boot/main.js",
   "engines": {
     "node": ">=22.5"

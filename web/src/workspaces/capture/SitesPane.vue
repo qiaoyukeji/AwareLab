@@ -39,26 +39,27 @@
           </template>
         </el-table-column>
         <el-table-column prop="template_name" label="假登录页" min-width="150" show-overflow-tooltip />
-        <!-- 访问地址是服务端派生的对外服务地址（域名/0.0.0.0→127.0.0.1/默认端口省略），不是专属链接 -->
-        <el-table-column label="访问地址" min-width="210">
+        <!-- 访问地址是服务端派生的对外服务地址（域名/0.0.0.0→127.0.0.1/默认端口省略），不是专属链接；
+             监听端口与协议并入副行，避免三列重复说同一件事把操作列挤出去 -->
+        <el-table-column label="访问地址" min-width="230">
           <template #default="{ row }">
             <a class="lab-hint site-link" :href="row.url" target="_blank" rel="noreferrer">{{ row.url }}</a>
+            <div class="lab-hint is-mute site-addr-sub">
+              <span class="site-addr-ip">{{ row.listen_ip }}:{{ row.listen_port }}</span>
+              <span class="site-addr-dot">·</span>{{ row.tls_cert ? 'HTTPS' : 'HTTP' }}
+            </div>
           </template>
         </el-table-column>
-        <el-table-column label="监听" width="140">
-          <template #default="{ row }"><span class="mono-inline">{{ row.listen_ip }}:{{ row.listen_port }}</span></template>
-        </el-table-column>
-        <el-table-column label="协议" width="76">
-          <template #default="{ row }">{{ row.tls_cert ? 'HTTPS' : 'HTTP' }}</template>
-        </el-table-column>
         <!-- 授权主体是建站时绑定的授权，级联下线与续期复服都按它算 -->
-        <el-table-column prop="auth_scope" label="授权主体" min-width="130" show-overflow-tooltip />
-        <el-table-column label="操作" width="268" fixed="right">
+        <el-table-column prop="auth_scope" label="授权主体" min-width="120" show-overflow-tooltip />
+        <!-- 5 个动作并排，宽度按"生成专属链接"不换行留够，避免"删除"被挤到第二行 -->
+        <el-table-column label="操作" width="320" fixed="right">
           <template #default="{ row }">
             <!-- 按钮方向由 status 决定；停止不设前端门禁，开启无授权时服务端 403 -->
             <el-button link type="primary" @click="toggle(row)">{{ row.status === 'open' ? '停止' : '开启' }}</el-button>
             <el-button link type="primary" @click="openPeek(row)">链接与上钩</el-button>
             <el-button link type="primary" @click="issueLink(row)">生成专属链接</el-button>
+            <el-button link type="primary" @click="openScreen(row)">大屏</el-button>
             <el-button link type="danger" @click="remove(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -326,6 +327,11 @@ function fmtSeconds(v) {
   return ts(v, { seconds: true, dash: '-' });
 }
 
+/** 单站大屏：新标签页开深链，投屏与列表操作互不打断。 */
+function openScreen(row) {
+  window.open(`#/screen/site/${row.id}`, '_blank', 'noopener');
+}
+
 /** 打开回看抽屉：记 id 后立刻 loadPeek；不记整行，头部与按钮跟列表最新状态。 */
 function openPeek(row) {
   peekSiteId.value = row.id;
@@ -509,6 +515,11 @@ onMounted(reload);
 <style scoped>
 .site-link { text-decoration: none; word-break: break-all; }
 .site-link:hover { text-decoration: underline; }
+/* 监听与协议降为地址副行：同一件事只说一遍，主列留给可点的对外地址 */
+.site-addr-sub { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-size: 11px; }
+/* 副行是地址的补充说明，不再画底色块：主行已经是可点链接，副行再加一块会像另一个控件 */
+.site-addr-ip { font-family: Consolas, "Cascadia Mono", monospace; color: var(--lab-ink-3); }
+.site-addr-dot { color: var(--lab-ink-4); }
 .section-t { font-size: 13px; font-weight: 700; color: var(--lab-ink); margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--lab-line-2); }
 .drawer-sections :deep(.el-form-item) { margin-bottom: 14px; }
 .drawer-foot { display: flex; align-items: center; gap: 8px; }

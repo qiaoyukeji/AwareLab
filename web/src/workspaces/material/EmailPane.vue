@@ -110,7 +110,7 @@
           <div class="lab-hint">
             发送时正文会自动嵌入打开像素与链接改写（<span class="mono-inline">/alab/v2/pixel</span>、<span class="mono-inline">/alab/v2/trace</span>），不需要在正文里手写。
             按收件人替换的变量：<span class="mono-inline" v-pre>{{name}}</span> 姓名、<span class="mono-inline" v-pre>{{email}}</span> 邮箱；
-            正文中指向钓鱼网站的链接会自动附加该收件人的专属令牌（<span class="mono-inline">?tk=</span>）。
+            站内链接写 <span class="mono-inline" v-pre>{{site_url}}/login</span> 即可，发送时按任务绑定的钓鱼网站换成它的域名端口，并附加该收件人的专属令牌（<span class="mono-inline">?tk=</span>）。
           </div>
         </template>
       </LabPane>

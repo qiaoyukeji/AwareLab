@@ -4,60 +4,120 @@
  * 选择器全是裸类名，几十个视图共用，改名或调 padding 会一次影响整站；只给单个面板用的样式请写进那个 .vue 的 <style scoped>。
  * 随机路径、口令这类值不许出现在这里，也不进构建产物。 */
 
-/* 竖排 flex：顶栏定高 → 授权提示条（有才出现）→ .lab-main 吃掉剩余高度并自己滚。滚动条生在 .lab-main 上，顶栏天然不动，不需要 sticky。height:100% 依赖 tokens.css 里 html/body/#app 的三连撑。 */
-.lab-shell { display: flex; flex-direction: column; height: 100%; }
+/* 外壳是左右两栏：左侧导航定宽、右侧内容列自己滚。height:100% 依赖 tokens.css 里 html/body/#app 的三连撑。
+ * 收起态（is-fold）与窄屏都只改列宽，导航项靠隐藏文字收窄，不做第二套 DOM，避免两份导航状态不同步。 */
+.lab-shell { display: grid; grid-template-columns: 238px minmax(0, 1fr); height: 100%; }
+.lab-shell.is-fold { grid-template-columns: 68px minmax(0, 1fr); }
 
-/* 高度只由 --lab-top-h 决定，改高度改令牌不改这里的 padding。z-index 在 flex item 上直接生效，20 只用来压页面内浮层，Element Plus 弹窗/抽屉自带 2000 起的层级，不受这里影响。 */
-.lab-top {
-  height: var(--lab-top-h);
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  padding: 0 18px;
-  background: var(--lab-ink);
-  color: #dfe7ee;
-  z-index: 20;
+/* 侧栏：品牌区固定 56px 与右侧顶栏等高，两边横线才对得齐；导航区独立滚动，长菜单不会把底部按钮挤出去 */
+.lab-side {
+  display: flex; flex-direction: column;
+  min-height: 0;
+  background: var(--lab-surface);
+  border-right: 1px solid var(--lab-line);
+  z-index: 10;
 }
-.lab-brand { display: flex; align-items: center; gap: 9px; flex: 0 0 auto; }
-/* 图标本体是 ui/BrandMark.vue 那张 SVG，靠 viewBox 缩放，显示尺寸在这里定；描边粗细属图形坐标系，缩得越小边越细，改尺寸要连着看 */
+.lab-side-brand {
+  display: flex; align-items: center; gap: 10px;
+  height: 56px; flex: 0 0 auto;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--lab-line-2);
+}
+/* 品牌 SVG 的显示尺寸定在这里，见 ui/BrandMark.vue；改尺寸要连着看描边粗细 */
 .lab-brand-mark {
   width: 26px; height: 26px;
   flex: 0 0 auto;
   display: block;
   border-radius: var(--lab-r);
 }
-.lab-brand-txt b { font-size: 14px; font-weight: 700; color: #fff; display: block; line-height: 1.15; }
-/* 副标语在 1180px 断点下整条隐藏 */
-.lab-brand-txt small { font-size: 11px; color: #8f9dab; display: block; }
+.lab-side-brand-txt b { display: block; font-size: 14px; font-weight: 700; color: var(--lab-ink); line-height: 1.2; }
+.lab-side-brand-txt small { display: block; font-size: 11px; color: var(--lab-ink-4); }
 
-/* 窗口窄时靠 overflow-x:auto 横滚；两套隐藏滚动条的写法都要留，scrollbar-width:none 管 Firefox，::-webkit-scrollbar 管 Chromium，只写一个会露出一条杠 */
-.lab-stages { display: flex; align-items: center; gap: 2px; overflow-x: auto; scrollbar-width: none; }
-.lab-stages::-webkit-scrollbar { display: none; }
-/* 阶段是 router-link，text-decoration:none 必须写在这里；white-space:nowrap 防标签被压成两行把顶栏顶高 */
-.lab-stage {
-  display: flex; align-items: center; gap: 6px;
-  padding: 6px 11px;
-  border-radius: var(--lab-r);
-  color: #b7c3ce; font-size: 13px; text-decoration: none; white-space: nowrap;
+.lab-nav { flex: 1 1 auto; overflow-y: auto; padding: 10px 10px 6px; }
+/* 分组标题是弱提示，不参与交互；收起态整行隐藏，靠间距分段 */
+.lab-nav-group {
+  padding: 12px 10px 6px;
+  font-size: 11px; font-weight: 700; letter-spacing: .08em;
+  color: var(--lab-ink-4);
+}
+.lab-nav-item {
+  position: relative;
+  display: flex; align-items: center; gap: 9px;
+  width: 100%;
+  padding: 8px 10px; margin-bottom: 2px;
+  border: 0; border-radius: var(--lab-r);
+  background: transparent; color: var(--lab-ink-2);
+  font-size: 13px; font-family: inherit; text-align: left; text-decoration: none;
+  cursor: pointer;
   transition: background .15s, color .15s;
 }
-.lab-stage:hover { background: rgba(255, 255, 255, .07); color: #fff; }
-/* 白字压在 --lab-accent 上约 5.5:1，AA 达标，所以选中态敢用白字 */
-.lab-stage.is-on { background: var(--lab-accent); color: #fff; font-weight: 600; }
-/* tabular-nums 保证 06→07 切换时序号宽度不跳 */
-.lab-stage-no { font-size: 11px; opacity: .6; font-variant-numeric: tabular-nums; }
-
-/* margin-left:auto 是唯一把它推到最右的手段（阶段导航不定宽） */
-.lab-top-side { margin-left: auto; display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
-/* 深底上的描边按钮用半透明白描边，--lab-line 是浅底用的线，放深底上等于看不见；既能当 button 也能当 router-link，cursor 与 text-decoration 都显式写 */
-.lab-top-btn {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 5px 9px; border-radius: var(--lab-r);
-  background: transparent; border: 1px solid rgba(255, 255, 255, .18);
-  color: #cfd8e0; font-size: 12px; cursor: pointer; text-decoration: none;
+.lab-nav-item:hover { background: var(--lab-fill); color: var(--lab-ink); }
+/* 选中态：淡底 + 主色字 + 左侧 3px 竖条。竖条用 ::before 而不是 border-left，避免文字左右位移 */
+.lab-nav-item.is-on { background: var(--lab-accent-soft); color: var(--lab-accent); font-weight: 600; }
+.lab-nav-item.is-on::before {
+  content: ''; position: absolute; left: 0; top: 7px; bottom: 7px;
+  width: 3px; border-radius: 0 2px 2px 0; background: var(--lab-accent);
 }
-.lab-top-btn:hover { border-color: rgba(255, 255, 255, .4); color: #fff; }
+.lab-nav-ico { font-size: 16px; flex: 0 0 auto; }
+.lab-nav-txt { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lab-nav-badge {
+  flex: 0 0 auto; min-width: 18px; padding: 0 5px;
+  border-radius: 999px; background: var(--lab-danger); color: #fff;
+  font-size: 11px; font-weight: 700; text-align: center; line-height: 18px;
+}
+.lab-side-foot { flex: 0 0 auto; padding: 8px 10px 10px; border-top: 1px solid var(--lab-line-2); }
+
+/* 收起态：只留图标，文字与分组标题一起隐藏；按钮居中。title 属性仍能给出名称 */
+.lab-shell.is-fold .lab-side-brand { justify-content: center; padding: 0; }
+.lab-shell.is-fold .lab-side-brand-txt,
+.lab-shell.is-fold .lab-nav-txt,
+.lab-shell.is-fold .lab-nav-badge,
+.lab-shell.is-fold .lab-nav-group { display: none; }
+.lab-shell.is-fold .lab-nav-item { justify-content: center; padding: 9px 0; }
+
+/* 右侧内容列：顶栏定高 → 授权提示条（有才出现）→ .lab-main 吃掉剩余高度并自己滚 */
+.lab-body { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.lab-topbar {
+  height: 56px; flex: 0 0 auto;
+  display: flex; align-items: center; gap: 14px;
+  padding: 0 18px;
+  background: var(--lab-surface);
+  border-bottom: 1px solid var(--lab-line);
+  z-index: 20;
+}
+/* 面包屑：组名弱化、当前页加粗。空格与箭头都靠 gap，不用 &nbsp; 拼字 */
+.lab-crumb { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 13px; color: var(--lab-ink-4); }
+.lab-crumb b { color: var(--lab-ink); font-weight: 700; white-space: nowrap; }
+.lab-crumb-sep { font-size: 12px; color: var(--lab-ink-4); }
+/* margin-left:auto 是唯一把它推到最右的手段 */
+.lab-topbar-side { margin-left: auto; display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+/* 浅底描边按钮，既当 button 也当 router-link：cursor 与 text-decoration 都显式写 */
+.lab-top-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border-radius: var(--lab-r);
+  background: var(--lab-surface); border: 1px solid var(--lab-line);
+  color: var(--lab-ink-2); font-size: 12px; cursor: pointer; text-decoration: none;
+  transition: border-color .15s, color .15s;
+}
+.lab-top-btn:hover { border-color: var(--lab-accent); color: var(--lab-accent); }
+
+/* 账号区：圆形首字母头像 + 用户名，省掉"用户"图标在中文界面里的歧义 */
+.lab-user {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 3px 8px 3px 3px; border: 1px solid transparent; border-radius: 999px;
+  color: var(--lab-ink-2); font-size: 12.5px; cursor: pointer;
+}
+.lab-user:hover { background: var(--lab-fill); }
+.lab-avatar {
+  width: 26px; height: 26px; flex: 0 0 auto;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%; background: var(--lab-accent); color: #fff;
+  font-size: 12px; font-weight: 700;
+}
+/* 显示名 + 角色两行：角色跟着账号走，普通用户登录时一眼能看出自己不是管理员 */
+.lab-user-txt { display: flex; flex-direction: column; line-height: 1.2; min-width: 0; }
+.lab-user-name { font-weight: 600; max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lab-user-role { color: var(--lab-ink-4); font-size: 10.5px; letter-spacing: .02em; }
 
 /* AppShell 在没有生效授权时插入的横幅。颜色只负责醒目，能不能建站/发信由服务端 mandate.js 判定，删掉或改灰这条都拦不住任何动作。 */
 .lab-gate {

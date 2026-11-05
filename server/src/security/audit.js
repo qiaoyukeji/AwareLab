@@ -10,14 +10,15 @@ import { clientIp } from '../platform/net/clientIp.js';
  * 高危动作留痕：授权登记/续期/吊销、沙箱开关、真实发送、证据导出、证据与站点删除、运行参数变更。
  * action 用 名词.动词 小写，是证据页筛选与 idx_audit_action 的键，改名要同步前端字典；detail 传对象或 null，传字符串会被再 JSON.stringify 一次。
  */
-export function writeAudit(req, action, { targetKind = null, targetId = null, detail = null } = {}) {
+export function writeAudit(req, action, { targetKind = null, targetId = null, detail = null, actor = undefined } = {}) {
   try {
     run(
       'INSERT INTO audit_logs (id,actor,action,target_kind,target_id,detail,ip,created_at) VALUES (?,?,?,?,?,?,?,?)',
       [
         crypto.randomUUID(),
-        // 未登录（定时任务、启动期）actor 留 null，好区分是不是人在后台点的
-        req?.session?.username ?? null,
+        // 未登录（定时任务、启动期）actor 留 null，好区分是不是人在后台点的。
+        // 登录/绑手机这类动作发生在签发会话之前，req.session 还是空，由调用方显式传 actor 落真实操作人。
+        req?.session?.username ?? actor ?? null,
         action,
         targetKind,
         targetId,

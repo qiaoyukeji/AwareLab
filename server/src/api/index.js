@@ -8,6 +8,7 @@ import { sessionApi } from './sessionApi.js';
 import { mandateApi } from './mandateApi.js';
 import { pageApi } from './pageApi.js';
 import { lessonApi } from './lessonApi.js';
+import { libraryApi } from './libraryApi.js';
 import { siteApi } from './siteApi.js';
 import { emailApi } from './emailApi.js';
 import { senderApi } from './senderApi.js';
@@ -15,6 +16,7 @@ import { campaignApi } from './campaignApi.js';
 import { evidenceApi } from './evidenceApi.js';
 import { insightApi } from './insightApi.js';
 import { platformApi } from './platformApi.js';
+import { userApi } from './userApi.js';
 
 /** 管理面挂载表：登录三接口先挂、不带会话守卫，其余域统一过一次 requireSession。 */
 export const apiRoot = express.Router();
@@ -25,7 +27,11 @@ apiRoot.use(sessionApi);
 
 // 从这里起全部要会话：守卫失败直接回 401 信封，后面的域不会被执行
 apiRoot.use(requireSession);
+// 账号管理：管理员建/改/删普通用户；普通用户访问一律 403
+apiRoot.use(userApi);
 apiRoot.use(mandateApi);
+// 内置素材目录：页面/邮件/学习页的模板市场，只读目录 + 复制/恢复动作
+apiRoot.use(libraryApi);
 apiRoot.use(pageApi);
 apiRoot.use(lessonApi);
 // 钓鱼网站：建/改/开关站过授权门禁，收网（停/删）不受门禁影响

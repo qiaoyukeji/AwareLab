@@ -1,63 +1,61 @@
 <template>
   <div class="mandate">
-    <!-- 平台总开关：current 为空时显示平台已锁住的说明，进度条按剩余百分比着色 -->
-    <LabPane
-      class="gate-pane"
-      :class="{ 'is-open': !!current }"
-      title="当前授权状态"
-      :hint="current ? '以下字段改动即时生效，无需重新登记' : '平台在授权解锁前拒绝一切建站与发信'"
-    >
-      <template #ops>
-        <span class="lab-chip" :class="current ? 'is-ok' : 'is-danger'">
-          <span class="lab-dot" :class="{ 'is-live': !!current }" />
-          {{ current ? STATUS_LABEL[current.effective] : '无有效授权' }}
-        </span>
-        <span v-if="current" class="lab-hint">{{ countdown }}</span>
-        <el-button size="small" :disabled="!current" @click="current && openEdit(current)">编辑当前授权</el-button>
-      </template>
+    <!-- 顶部状态卡：把"现在能不能用、还剩多久、授权了哪些域名"三件事压在一屏内。
+         未授权时同一张卡变成引导态，主按钮直接开登记弹窗，避免旧版先读一屏规则再找不到入口。 -->
+    <section class="gate-hero" :class="{ 'is-off': !current }">
+      <div class="gate-hero-top">
+        <div class="gate-hero-id">
+          <span class="lab-chip" :class="current ? 'is-ok' : 'is-danger'">
+            <span class="lab-dot" :class="{ 'is-live': !!current }" />
+            {{ current ? STATUS_LABEL[current.effective] : '平台已锁定' }}
+          </span>
+          <h2>{{ current ? current.scope : '还没有生效中的演练授权' }}</h2>
+          <p class="lab-hint">
+            <template v-if="current">授权至 {{ fmt(current.end_at) }} · {{ countdown }} · 允许仿冒 {{ hostsOf(current).length }} 个域名</template>
+            <template v-else>登记一条授权后即可创建钓鱼网站、发送演练邮件；填三项、勾一次确认，大约 1 分钟。</template>
+          </p>
+        </div>
+        <div class="gate-hero-ops">
+          <el-button type="primary" @click="openCreate">{{ current ? '登记新授权' : '立即登记授权' }}</el-button>
+          <el-button v-if="current" @click="openEdit(current)">编辑当前授权</el-button>
+        </div>
+      </div>
 
-      <!-- 起止一律 fmt() 到秒：有效期是硬边界，只到分会让 9:00 整开的站看起来提前一分钟就生效 -->
       <template v-if="current">
         <div class="lab-bar gate-bar">
           <div class="lab-bar-fill" :class="barTone" :style="{ width: remainPct + '%' }" />
         </div>
-        <div class="lab-kv gate-kv">
-          <span>授权主体 <b>{{ current.scope }}</b></span>
-          <span>对接人 <b>{{ current.contact || '—' }}</b></span>
-          <span>有效期起 <b>{{ fmt(current.start_at) }}</b></span>
-          <span>有效期止 <b>{{ fmt(current.end_at) }}</b></span>
-          <span>授权名单条数 <b>{{ hostsOf(current).length }}</b></span>
-          <span>备注 <b>{{ current.note || '—' }}</b></span>
+        <div class="gate-stats">
+          <div><b>{{ remainPct }}%</b><small>剩余时长</small></div>
+          <div><b>{{ hostsOf(current).length }}</b><small>授权域名</small></div>
+          <div><b>{{ fmt(current.end_at) }}</b><small>到期时间</small></div>
+          <div><b>{{ current.contact || '—' }}</b><small>对接人</small></div>
         </div>
         <div class="host-row">
           <span v-for="h in hostsOf(current)" :key="h" class="lab-chip is-accent">{{ h }}</span>
         </div>
       </template>
-
-      <!-- 过期记录直接编辑续期即可，不必重新登记 -->
-      <p v-else class="lab-hint gate-off">
-        <span class="lab-strong">平台已拒绝建站、开启网站与邮件发送</span>，钓鱼网站对任何访问都返回不可用。
-        请在下方「授权记录」登记授权；若已有过期记录，直接对其 <span class="lab-strong">编辑续期</span> 即可，不必重新登记。
-      </p>
-    </LabPane>
+    </section>
 
     <!-- 授权记录：一次演练 = 一条授权 -->
     <LabPane flush title="授权记录" hint="每一次演练都归属到这里的一条记录">
       <template #ops>
-        <el-button type="primary" size="small" @click="openCreate">登记新授权</el-button>
         <el-button size="small" @click="load">刷新</el-button>
       </template>
-      <div style="padding: 0 14px" class="rule-note">
-        <p class="lab-hint">
-          平台把授权作为硬性要求：没有处于有效期内的记录时，钓鱼网站无法创建与开启、邮件任务拒绝发送，名单外的域名访问一律被拒绝。
-          修改授权内容后，若该授权已不在生效窗口，其下网站会被自动停止监听；吊销授权同样立即停止所有网站。
-          <span class="lab-strong">已吊销的记录不可修改，只能重新登记。</span>
-        </p>
-        <p class="lab-hint">
-          「生成报告」与「导出交付CSV」每按一次都会各写一条 <span class="lab-mono-inline">report.export</span> 审计（谁在什么时候为哪条授权导走了什么形态）；
-          两份交付物中口令一律掩码、邮箱部分掩码，可以直接交给甲方。
-        </p>
-      </div>
+      <!-- 规则说明收进折叠区：首次使用要能查到，日常操作不该占掉半屏 -->
+      <el-collapse class="rule-note">
+        <el-collapse-item name="rules" title="授权规则与放行判定">
+          <p class="lab-hint">
+            平台把授权作为硬性要求：没有处于有效期内的记录时，钓鱼网站无法创建与开启、邮件任务拒绝发送，名单外的域名访问一律被拒绝。
+            修改授权内容后，若该授权已不在生效窗口，其下网站会被自动停止监听；吊销授权同样立即停止所有网站。
+            <span class="lab-strong">已吊销的记录不可修改，只能重新登记。</span>
+          </p>
+          <p class="lab-hint">
+            「生成报告」与「导出交付CSV」每按一次都会各写一条 <span class="lab-mono-inline">report.export</span> 审计（谁在什么时候为哪条授权导走了什么形态）；
+            两份交付物中口令一律掩码、邮箱部分掩码，可以直接交给甲方。
+          </p>
+        </el-collapse-item>
+      </el-collapse>
       <!-- 状态列读 row.effective（后端按此刻算出的档），按钮读 row.status（是否吊销），两回事 -->
       <el-table :data="rows" size="small">
         <el-table-column prop="scope" label="授权主体" min-width="150" show-overflow-tooltip />
@@ -79,26 +77,24 @@
           </template>
         </el-table-column>
         <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip />
-        <!-- 下行三个按钮不按 status 禁用：复盘动作在吊销之后照样要做，不受授权门禁管 -->
-        <el-table-column label="操作" width="248" fixed="right">
+        <!-- 复盘动作不按 status 禁用：吊销之后照样要汇报，不受授权门禁管 -->
+        <el-table-column label="操作" width="190" fixed="right">
           <template #default="{ row }">
             <div class="ops-row">
               <el-button link type="primary" :disabled="row.status !== 'active'" @click="openEdit(row)">编辑</el-button>
-              <el-button link type="danger" :disabled="row.status !== 'active'" @click="revoke(row)">吊销</el-button>
-            </div>
-            <div class="ops-row">
-              <el-button link type="primary" @click="openSummary(row)">演练汇总</el-button>
-              <!-- 两条出口都走 window.open，鉴权靠登录时落下的 HttpOnly Cookie -->
-              <el-dropdown trigger="click" @command="(cmd) => openReport(row, cmd)">
-                <el-button link type="primary">生成报告</el-button>
+              <el-button link type="primary" @click="openSummary(row)">汇总</el-button>
+              <!-- 低频动作收进"更多"：交付物与吊销平时用不到，摊开只会挤窄表格 -->
+              <el-dropdown trigger="click" @command="(cmd) => onRowCommand(row, cmd)">
+                <el-button link type="primary">更多<el-icon class="el-icon--right"><ArrowDown /></el-icon></el-button>
                 <template #dropdown>
                   <el-dropdown-menu>
-                    <el-dropdown-item command="inline">在新标签页打开（可打印为 PDF）</el-dropdown-item>
-                    <el-dropdown-item command="download">下载 HTML 文件</el-dropdown-item>
+                    <el-dropdown-item command="report-inline">生成报告（新标签页）</el-dropdown-item>
+                    <el-dropdown-item command="report-download">下载报告 HTML</el-dropdown-item>
+                    <el-dropdown-item command="csv">导出交付 CSV</el-dropdown-item>
+                    <el-dropdown-item command="revoke" divided :disabled="row.status !== 'active'">吊销授权</el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
               </el-dropdown>
-              <el-button link type="primary" @click="exportCsv(row)">导出交付CSV</el-button>
             </div>
           </template>
         </el-table-column>
@@ -114,104 +110,14 @@
       </template>
     </LabPane>
 
-    <!-- 登记与编辑共用抽屉，editingId 决定标题与 POST/PUT；close-on-click-modal=false 防止误点空白清掉填了一半的内容 -->
-    <el-drawer
+    <!-- 登记/修改统一走 MandateDialog：三项必填 + 一次勾选，承诺原文由弹窗写回档案 -->
+    <MandateDialog
       v-model="drawer"
-      :title="editingId ? '修改演练授权' : '登记演练授权'"
-      size="560px"
-      :close-on-click-modal="false"
-      direction="rtl"
-    >
-      <!-- statement 由后端 /authorizations/pledge 下发，平台不自己编免责话；取不到时兜底中性文案 -->
-      <div class="pledge-tip">
-        <span class="lab-strong">{{ statement || '本平台仅用于授权范围内的安全意识演练。' }}</span>
-        <p class="lab-hint">
-          请确认你已获得被测组织的书面授权，并且演练目标、时间窗口与下方登记内容一致。
-          <template v-if="editingId">修改授权内容同样需要重新输入使用承诺。</template>
-        </p>
-      </div>
-
-      <!-- 四段顺序对应后端的校验要件，承诺栏放在最后一段 -->
-      <el-form label-position="top" class="auth-form">
-        <section>
-          <h4 class="sec-t">授权主体与对接人</h4>
-          <el-form-item label="授权主体" required>
-            <el-input v-model="form.scope" placeholder="如：某某科技 信息安全部（对应授权文件中的被演练组织）" />
-          </el-form-item>
-          <el-form-item label="对接人">
-            <el-input v-model="form.contact" placeholder="授权方联系人 / 工单号" />
-          </el-form-item>
-          <el-form-item label="备注">
-            <el-input v-model="form.note" type="textarea" :rows="2" placeholder="授权文件编号、审批链等" />
-          </el-form-item>
-        </section>
-
-        <section>
-          <h4 class="sec-t">有效期</h4>
-          <!-- 起止存 UTC ISO（value-format 带 .000Z），显示给操作员的是本机时区（见 fmt()） -->
-          <el-form-item label="起止时间" required>
-            <el-date-picker
-              v-model="form.range"
-              type="datetimerange"
-              value-format="YYYY-MM-DDTHH:mm:ss.000Z"
-              start-placeholder="开始时间"
-              end-placeholder="结束时间"
-              style="width: 100%"
-            />
-          </el-form-item>
-          <p class="lab-hint is-mute">
-            缩短有效期属于高危改动：保存时若该授权已滑出生效窗口，其下正在监听的网站会被立即停止，并在结果里告诉你停了几台。
-          </p>
-        </section>
-
-        <section>
-          <h4 class="sec-t">授权名单</h4>
-          <el-form-item label="允许仿冒的域名或标记（每行一个）" required>
-            <el-input
-              v-model="form.hosts"
-              type="textarea"
-              :rows="4"
-              placeholder="每行一个允许仿冒的域名或标记：&#10;corp.example.com&#10;*.mail.example.com&#10;#ip（允许直接用 IP 访问钓鱼网站）"
-            />
-          </el-form-item>
-          <!-- 名单实时预览：解析只做换行与逗号切分、去空，域名合法性由后端把关 -->
-          <div class="host-preview">
-            <span v-for="(h, i) in parsedHosts" :key="`${h}-${i}`" class="lab-chip is-accent">{{ h }}</span>
-            <span v-if="!parsedHosts.length" class="lab-chip is-danger">授权名单为空，无法保存</span>
-          </div>
-          <p class="lab-hint is-mute">
-            支持三种写法：<span class="lab-mono-inline">#ip</span>（IP 直连访问钓鱼网站）、<span class="lab-mono-inline">*.domain</span>（泛域名）、
-            <span class="lab-mono-inline">corp.example.com</span>（精确域名）。钓鱼网站只服务授权名单里写到的域名。
-          </p>
-        </section>
-
-        <section>
-          <h4 class="sec-t">使用承诺</h4>
-          <el-form-item label="手动完整输入下方承诺语句后才允许保存" required>
-            <el-input v-model="form.pledge" :placeholder="`请完整输入：${requiredPledge}`" />
-          </el-form-item>
-          <!-- 逐字比对用 ===，大小写与空白都算；页面不给复制入口，也不提示错在哪一位 -->
-          <div class="pledge-check">
-            <span class="lab-chip" :class="pledgeMatched ? 'is-ok' : 'is-danger'">
-              {{ pledgeMatched ? '承诺文本一致，可以保存' : '承诺文本尚未完整输入' }}
-            </span>
-          </div>
-          <p class="lab-hint is-mute">
-            这是平台的硬约束：承诺必须由操作者本人按输入框提示逐字键入，页面不提供复制、自动填充或跳过入口。
-          </p>
-        </section>
-      </el-form>
-
-      <template #footer>
-        <!-- 禁用只看 pledgeMatched；名单与主体为空由 save() 的提示负责 -->
-        <div class="drawer-foot">
-          <el-button @click="drawer = false">取消</el-button>
-          <el-button type="primary" :loading="saving" :disabled="!pledgeMatched" @click="save">
-            {{ editingId ? '保存修改并生效' : '确认并启用' }}
-          </el-button>
-        </div>
-      </template>
-    </el-drawer>
+      :editing="editingRow"
+      :pledge="requiredPledge"
+      :statement="statement"
+      @saved="load"
+    />
 
     <!-- 汇总按后端返回形状原样渲染：数字要与甲方报告一字不差（同一数据源），前端不再算一遍 -->
     <el-drawer v-model="sumDrawer" :title="sumTitle" size="720px" direction="rtl">
@@ -355,12 +261,13 @@
 /**
  * 演练授权面板：授权记录、登记与编辑、演练汇总与交付三件套，三个写动作在后端各落一条 authorization.* 审计。
  */
-import { ref, reactive, computed, onMounted } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 // CSV 是非信封响应，不能过 http 拦截器，所以单独用 download；API_BASE 给 window.open 拼报告地址
 import http, { download, API_BASE } from '../../api/client';
 import LabPane from '../../ui/LabPane.vue';
 import LabMetric from '../../ui/LabMetric.vue';
+import MandateDialog from './MandateDialog.vue';
 import { fmtTime as ts } from '../../utils/time';
 
 // gate 由 AppShell 传下来，只在本页还没取到列表时当兜底的当前授权用（见 current）
@@ -370,19 +277,15 @@ const props = defineProps({ gate: { type: Object, default: null } });
 const STATUS_LABEL = { active: '生效中', expired: '已过期', pending: '未开始', revoked: '已吊销', missing: '无' };
 /** effective → 芯片配色。revoked 给灰不给红：吊销是演练的正常收尾，不是告警。missing 由模板的 `|| ''` 兜住。 */
 const STATUS_CHIP = { active: 'is-ok', expired: 'is-danger', pending: 'is-warn', revoked: '' };
-// 表单初值：打开抽屉前整体铺一遍，避免上一条记录的 pledge 残留
-const BLANK = { scope: '', contact: '', range: [], hosts: '', note: '', pledge: '' };
 
 // GET /authorizations 的全量结果，不分页：一家单位通常就几条
 const rows = ref([]);
+// 弹窗开关；editingRow 为 null 表示新建，否则是被修改的那一行（整行传给弹窗回填）
 const drawer = ref(false);
-const saving = ref(false);
-// editingId 为 null 表示这次是新建，决定标题、按钮文案与提交方式
-const editingId = ref(null);
-// 后端下发的承诺原文与平台声明；pledge 取不到时 requiredPledge 保持空串，于是永远存不下去（fail-closed）
+const editingRow = ref(null);
+// 后端下发的承诺原文与平台声明；pledge 取不到时弹窗保持不可提交（fail-closed）
 const requiredPledge = ref('');
 const statement = ref('');
-const form = reactive({ ...BLANK });
 
 // 演练汇总抽屉：sumRow 供标题取 scope，summary 存后端返回原样，不裁剪、不换算
 const sumDrawer = ref(false);
@@ -441,18 +344,6 @@ const countdown = computed(() => {
 });
 
 /**
- * 名单输入解析成 allowed_hosts：换行和逗号都切，逐段去空白丢空项。
- * 不校验域名合法性，这里抢先判定会把后端的错误文案顶掉。
- */
-const parsedHosts = computed(() => form.hosts.split(/[\n,]/).map((s) => s.trim()).filter(Boolean));
-
-/**
- * 承诺是否与后端原文逐字一致（=== 全等，大小写标点空白都算）。
- * requiredPledge 为空时恒为 false，保存按钮永远点不动：连承诺原文都拿不到就不该放行登记。
- */
-const pledgeMatched = computed(() => !!requiredPledge.value && form.pledge === requiredPledge.value);
-
-/**
  * 重取授权列表，连带刷新页头总开关、进度条、倒计时与状态芯片。
  * effective 是按此刻算出的派生值，本地猜不出级联结果，所以每个写操作后都要重读一次。
  */
@@ -460,77 +351,24 @@ async function load() {
   rows.value = (await http.get('/authorizations')) || [];
 }
 
-/**
- * 打开登记抽屉：editingId 归 null，表单铺 BLANK，hosts 预填 '#ip'。
- * 漏了 #ip 就只能用域名访问钓鱼网站，IP 直连会被名单挡掉，而空栏的报错只说"名单必填"。
- */
+/** 新建：清空 editingRow，由弹窗铺默认值（名单预填 #ip、有效期默认 30 天）。 */
 function openCreate() {
-  editingId.value = null;
-  // 换行只是把光标留在下一行；空行在解析时被 filter(Boolean) 丢掉
-  Object.assign(form, { ...BLANK, hosts: '#ip\n' });
+  editingRow.value = null;
   drawer.value = true;
 }
 
-/**
- * 打开修改抽屉，用列表行回填表单；过期与未开始的行照样能进来续期。
- * pledge 强制留空：修改同样要求重新逐字输入承诺，回填旧文本等于拆掉这道闸门。
- */
+/** 修改：整行传进去回填；过期与未开始的行照样能进来续期。 */
 function openEdit(row) {
-  editingId.value = row.id;
-  Object.assign(form, {
-    scope: row.scope,
-    contact: row.contact || '',
-    // 回填成 UTC ISO，与 date-picker 的 value-format 同一解析口径，否则窗口整体平移一个时区差
-    range: [new Date(row.start_at).toISOString(), new Date(row.end_at).toISOString()],
-    hosts: hostsOf(row).join('\n'),
-    note: row.note || '',
-    pledge: '',
-  });
+  editingRow.value = row;
   drawer.value = true;
 }
 
-/** 组装提交给后端的授权对象，新建与修改同形状（后端按整条替换处理）。range 原样提交，二次换算会错一个时区差。 */
-function payload() {
-  return {
-    scope: form.scope,
-    contact: form.contact,
-    start_at: form.range[0],
-    end_at: form.range[1],
-    allowed_hosts: parsedHosts.value,
-    pledge: form.pledge,
-    note: form.note,
-  };
-}
-
-/**
- * 保存：editingId 有值走 PUT，否则 POST。三条前置守卫在这里收口，按钮的 disabled 只挡承诺那一条。
- * 新窗口滑出生效期时后端会级联停站并回传 stopped_sites，反之复服并回传 reopened_sites；两个数字必须原样进提示。
- */
-async function save() {
-  if (!form.scope || !form.range?.length) return ElMessage.warning('授权主体与有效期必填');
-  if (!parsedHosts.value.length) return ElMessage.warning('授权名单必填：至少一条域名、泛域名或 #ip');
-  if (!pledgeMatched.value) return ElMessage.warning('请手动完整输入使用承诺');
-  saving.value = true;
-  try {
-    const editing = !!editingId.value;
-    const res = editing
-      ? await http.put(`/authorizations/${editingId.value}`, payload())
-      : await http.post('/authorizations', payload());
-    if (editing && res?.stopped_sites) {
-      ElMessage.warning(`修改已保存；该授权已不在生效窗口，停止 ${res.stopped_sites} 个网站监听`);
-    } else if (editing && res?.reopened_sites) {
-      ElMessage.success(`授权已更新并生效；恢复 ${res.reopened_sites} 个此前因出窗口而下线的网站监听`);
-    } else {
-      ElMessage.success(editing ? '授权已更新并生效' : '授权已登记，平台能力解锁');
-    }
-    drawer.value = false;
-    Object.assign(form, { ...BLANK });
-    load();
-  } catch (err) {
-    ElMessage.error(err.message);
-  } finally {
-    saving.value = false;
-  }
+/** 表格"更多"菜单的分发：低频动作集中在这里，主列只留编辑与汇总。 */
+function onRowCommand(row, cmd) {
+  if (cmd === 'revoke') return revoke(row);
+  if (cmd === 'csv') return exportCsv(row);
+  if (cmd === 'report-download') return openReport(row, 'download');
+  return openReport(row, 'inline');
 }
 
 /**
@@ -617,7 +455,7 @@ function reportName(row, ext) {
 
 /**
  * 进场先取承诺原文再取列表：pledge 是保存闸门的判据，必须先落地，列表慢一点没关系。
- * 取承诺失败时静默置空 requiredPledge，pledgeMatched 恒为 false、按钮全程禁用（fail-closed），列表照样继续读。
+ * 取承诺失败时静默置空 requiredPledge，登记弹窗保持不可提交（fail-closed），列表照样继续读。
  */
 onMounted(async () => {
   try {
@@ -633,23 +471,43 @@ onMounted(async () => {
 
 <style scoped>
 .mandate { display: flex; flex-direction: column; gap: var(--lab-gap); }
-.gate-pane.is-open { border-left: 3px solid var(--lab-accent); }
-.gate-bar { height: 8px; margin-bottom: 12px; }
-.gate-kv { margin-bottom: 12px; }
+
+/* 状态卡：左侧说明、右侧主操作；未授权时左侧加一道主色描边，把注意力引到"立即登记"。
+ * 不用 el-card 是因为这里要一条通栏进度条，组件自带的内边距会把它挤成两张皮。 */
+.gate-hero {
+  background: var(--lab-surface);
+  border: 1px solid var(--lab-line);
+  border-left: 3px solid var(--lab-accent);
+  border-radius: var(--lab-r-lg);
+  padding: 18px 20px;
+}
+.gate-hero.is-off { border-left-color: var(--lab-danger); }
+.gate-hero-top { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.gate-hero-id { flex: 1 1 420px; min-width: 0; }
+.gate-hero-id h2 { margin: 8px 0 4px; font-size: 19px; font-weight: 700; color: var(--lab-ink); }
+.gate-hero-id .lab-hint { margin: 0; }
+.gate-hero-ops { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+/* 相邻按钮默认 margin-left 会和 gap 叠出双倍缝 */
+.gate-hero-ops .el-button + .el-button { margin-left: 0; }
+
+.gate-bar { height: 8px; margin: 16px 0 12px; }
+/* 四项关键数字横排，窄屏自动折行；等宽数字避免倒计时跳动时列宽抖动 */
+.gate-stats { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+.gate-stats > div {
+  flex: 1 1 150px;
+  padding: 8px 12px;
+  border-radius: var(--lab-r);
+  background: var(--lab-fill-2);
+  border: 1px solid var(--lab-line-2);
+}
+.gate-stats b { display: block; font-size: 14px; font-weight: 700; color: var(--lab-ink); font-variant-numeric: tabular-nums; }
+.gate-stats small { display: block; margin-top: 2px; font-size: 11.5px; color: var(--lab-ink-4); }
+
 .host-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .host-mini { margin: 2px 3px 2px 0; }
-.gate-off { margin: 0; }
-.rule-note { padding-top: 12px; }
+.rule-note { margin: 12px 0 4px; padding: 0 14px; }
+.rule-note :deep(.el-collapse-item__header) { font-size: 12.5px; color: var(--lab-ink-3); }
 .win { font-size: 12px; color: var(--lab-ink-4); line-height: 1.6; }
-.pledge-tip {
-  background: var(--lab-warn-soft);
-  border: 1px solid #eddcbf;
-  border-radius: var(--lab-r);
-  padding: 10px 12px;
-  margin-bottom: 16px;
-  color: var(--lab-warn);
-}
-.auth-form section { margin-bottom: 18px; }
 .sec-t {
   margin: 0 0 8px;
   font-size: 13px;
@@ -658,7 +516,6 @@ onMounted(async () => {
   padding-bottom: 6px;
   border-bottom: 1px solid var(--lab-line-2);
 }
-.host-preview { display: flex; flex-wrap: wrap; gap: 6px; margin: -6px 0 8px; }
 .lab-mono-inline {
   font-family: Consolas, "Cascadia Mono", monospace;
   font-size: 12px;
@@ -668,11 +525,8 @@ onMounted(async () => {
   padding: 0 4px;
   color: var(--lab-ink-2);
 }
-.pledge-check { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: -6px 0 8px; }
-.drawer-foot { display: flex; justify-content: flex-end; gap: 8px; }
 /* 相邻 el-button 的默认 margin-left 必须归零，否则与 gap 叠出双倍缝；el-dropdown 不吃那条规则 */
 .ops-row { display: flex; align-items: center; gap: 12px; }
-.ops-row + .ops-row { margin-top: 5px; }
 .ops-row .el-button + .el-button { margin-left: 0; }
 /* 两排指标格上下叠时留一行缝 */
 .sum-body section { margin-bottom: 18px; }

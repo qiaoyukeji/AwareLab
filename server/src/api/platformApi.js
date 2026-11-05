@@ -19,8 +19,9 @@ import {
   panelExposed,
   deploymentBlockReason,
 } from '../platform/configCheck.js';
-import { loginSecurityStatus } from '../security/session.js';
+import { loginSecurityStatus, requireAdmin } from '../security/session.js';
 import { retentionStatus, runRetentionSweep } from '../platform/maintenance.js';
+import { smsConfig, maskedSmsConfig, saveSmsConfig, smsReadyProblem, normalizeTemplateParam } from '../sms/sms.js';
 
 export const platformApi = express.Router();
 
@@ -119,11 +120,16 @@ function settingsAuditDetail(key, value) {
   return { value: String(JSON.stringify(value ?? null)).slice(0, 500) };
 }
 
-/** GET /settings 一屏数据源，只读、永远成功；ai 掩码回传，端口区间/门禁/面板路径等 config.yaml 值启动读一次、前端只看不能改，panel_path 需会话。 */
-platformApi.get('/settings', (_req, res) => {
+/** GET /settings 一屏数据源，只读、永远成功；ai/sms 掩码回传（仅管理员），端口区间/门禁/面板路径等 config.yaml 值启动读一次、前端只看不能改，panel_path 需会话。 */
+platformApi.get('/settings', requireAdmin, (_req, res) => {
+  const sms = smsConfig();
   ok(res, {
     push: getSetting('push', PUSH_DEFAULT),
     ai: maskSecrets(getSetting('ai', AI_DEFAULT)),
+    sms: maskedSmsConfig(),
+    sms_ready: !smsReadyProblem(sms),
+    // 把「为什么还不能启用」原样带给界面：最常见是 AccessKey 被浏览器自动填成了后台登录账号
+    sms_ready_reason: smsReadyProblem(sms) || '',
     capture_port_range: config.capture.port_range,
     mail_default_dry_run: config.mail.default_dry_run,
     require_authorization: config.exercise.require_authorization,
@@ -135,10 +141,35 @@ platformApi.get('/settings', (_req, res) => {
 });
 
 /** PUT /settings/:key 写一个键（body 取 value，键名走 URL），无白名单但每次必写审计、detail 脱敏截断，缺 value 或校验不过 400；ai 先 keepStoredKeys 再逐厂商过 providerUrlProblem，push 走 pushConfigProblem 并与默认合并，其余键原样存（端口区间与门禁开关要改 config.yaml 重启）。 */
-platformApi.put('/settings/:key', (req, res) => {
+platformApi.put('/settings/:key', requireAdmin, (req, res) => {
   const incoming = req.body?.value;
   // 缺 value 会把键存成空配置，必须拒掉而不是静默清空
   if (incoming === undefined) return badRequest(res, '缺少要保存的配置值');
+  if (req.params.key === 'sms') {
+    const saved = saveSmsConfig(incoming || {});
+    const problem = saved.enabled ? smsReadyProblem(saved) : null;
+    writeAudit(req, 'settings.update', {
+      targetKind: 'setting',
+      targetId: 'sms',
+      // 审计只记开关与「密钥是否配置」，AK Secret 与签名原文不落库
+      detail: {
+        value: JSON.stringify({
+          enabled: saved.enabled,
+          has_access_key: Boolean(saved.access_key_id),
+          has_secret: Boolean(saved.access_key_secret),
+          sign_name: saved.sign_name,
+          template_code: saved.template_code,
+        }).slice(0, 500),
+      },
+    });
+    if (problem) return ok(res, { ...maskedSmsConfig(), warning: `已保存，但还不能启用：${problem}` });
+    // 模板参数写错是最常见的发码失败原因，保存时就提示，不必等阿里云回 isv.INVALID_PARAMETERS
+    const paramProblem = incoming?.template_param !== undefined
+      ? normalizeTemplateParam(incoming.template_param).problem
+      : null;
+    if (paramProblem) return ok(res, { ...maskedSmsConfig(), warning: `已保存；${paramProblem}` });
+    return ok(res, maskedSmsConfig());
+  }
   if (req.params.key === 'ai') {
     const merged = keepStoredKeys(incoming, getSetting('ai', AI_DEFAULT));
     // 每个厂商 base_url 都过门禁：settings 里的 URL 是唯一出站目的地，漏一家就是后门

@@ -56,12 +56,13 @@
         <el-table-column label="更新时间" width="130">
           <template #default="{ row }"><span class="lab-hint">{{ ts(row.updated_at) }}</span></template>
         </el-table-column>
-        <el-table-column label="操作" width="250" fixed="right">
+        <el-table-column label="操作" width="300" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click="openDetail(row)">详情</el-button>
             <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
             <!-- 空名册发一次只会吃服务端 400，先把按钮按住 -->
             <el-button link type="primary" :disabled="!row.stats.total" @click="send(row)">发送</el-button>
+            <el-button link type="primary" @click="openScreen(row)">大屏</el-button>
             <el-button link type="danger" @click="remove(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -115,13 +116,18 @@
           </el-form-item>
           <!-- 显示名可与 from_addr 不同，收件人看到的就是这行，仿冒点在此 -->
           <el-form-item label="发件人显示"><el-input v-model="form.sender" placeholder="可选，如 企业IT服务中心" style="width: 300px" /></el-form-item>
-          <!-- 只展示不勾选：任务不绑网站，发送时按当时已授权开启的站点拼链接 -->
+          <!-- 绑定站点决定"邮件里的域名:端口"：不绑时只能按任务里写死的绝对链接走，绑了以后
+               {{site_url}}、链接改写与像素都落在该站点的监听端口（例如 8080），而不是管理端 7778 -->
           <el-form-item label="绑定网站">
-            <div class="site-chips">
-              <span v-for="s in openSites" :key="s.id" class="lab-chip is-accent">{{ siteLabel(s) }}</span>
-              <span v-if="!openSites.length" class="lab-hint is-mute">当前没有开启中的钓鱼网站</span>
+            <el-select v-model="form.site_id" clearable filterable placeholder="选择一封邮件指向的钓鱼网站（推荐）" style="width: 360px">
+              <!-- 地址在前、模板名在后：窄屏先截断的应是模板名，域名端口才是操作员要核对的信息 -->
+              <el-option v-for="s in openSites" :key="s.id" :label="`${siteLabel(s)} · ${s.template_name || '钓鱼页'}`" :value="s.id" />
+            </el-select>
+            <div class="lab-hint is-mute">
+              绑定后，正文里的 <code v-pre>{{site_url}}</code>、站内链接与打开像素都指向这个站点的端口；
+              未绑定时若只有一台开启中的站点会自动用它，一台都没有时含 <code v-pre>{{site_url}}</code> 的任务会被拦下。
+              收件人看到的跳转域名以这里为准。
             </div>
-            <div class="lab-hint is-mute">这里不用选网站：发送时链接会自动指向「钓鱼网站」里已按授权开启的页面，任务不需逐条绑定。</div>
           </el-form-item>
           <!-- 已保存的任务才能传：服务端按任务 id 命名文件，防跨任务撞名。
                回调地址是协议 v2 的冻结约定，改措辞等于改协议 -->
@@ -390,7 +396,7 @@ const detailRecipients = ref([]);
 // 字段名与 POST/PUT /mail-tasks 的入参一一对应。附件只存服务端回的名字，文件本身在磁盘上。
 const form = reactive({
   id: '', title: '', mail_template_id: '', subject: '', body_html: '',
-  attachment_name: '', smtp_profile_id: '', sender: '',
+  attachment_name: '', smtp_profile_id: '', sender: '', site_id: '',
   send_interval_ms: 3000, dry_run: true,
 });
 
@@ -419,7 +425,8 @@ async function loadMeta() {
 
 /** 站点行压成 域名:端口；domain 为空时退成"监听"，避免出现 " : 8080" 这种断头文本。 */
 function siteLabel(s) {
-  return `${s.domain || '监听'} : ${s.listen_port}`;
+  // 站点表没有独立 name 列（标题取模板名），域名优先、否则用监听地址:端口
+  return s.domain ? `${s.domain}:${s.listen_port}` : `${s.listen_ip || '127.0.0.1'}:${s.listen_port}`;
 }
 
 /** 覆盖式重置表单，新建传 null，字段一律兜空串防后端回 null。
@@ -434,6 +441,7 @@ function resetForm(task) {
     attachment_name: task?.attachment_name || '',
     smtp_profile_id: task?.smtp_profile_id || '',
     sender: task?.sender || '',
+    site_id: task?.site_id || '',
     send_interval_ms: task?.send_interval_ms ?? 3000,
     dry_run: task ? Boolean(task.dry_run) : true,
   });
@@ -448,6 +456,11 @@ function openCreate() {
   recipientText.value = '';
   loadMeta();
   editor.value = true;
+}
+
+/** 单任务大屏：新标签页开深链，投屏与名单操作互不打断。 */
+function openScreen(row) {
+  window.open(`#/screen/task/${row.id}`, '_blank', 'noopener');
 }
 
 /** 打开编辑抽屉：台账行只是概览、正文可能没带全，必须回读 GET /mail-tasks/:id 拿 task 与 recipients。 */
@@ -490,6 +503,7 @@ async function ensureTask() {
     body_html: form.body_html,
     smtp_profile_id: form.smtp_profile_id || null,
     sender: form.sender || null,
+    site_id: form.site_id || null,
     send_interval_ms: form.send_interval_ms,
     dry_run: form.dry_run,
   };

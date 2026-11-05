@@ -11,11 +11,11 @@ import { config } from '../platform/settings.js';
 import { clientIp } from '../platform/net/clientIp.js';
 import { get, run, nowIso } from '../platform/storage/rows.js';
 import { fail, tooManyRequests } from '../platform/net/envelope.js';
-import { effectiveStatus, findById, findActive, isHostAuthorized } from '../security/mandate.js';
-import { renderNoticePage } from '../capture/pageCompiler.js';
+import { effectiveStatus, findById } from '../security/mandate.js';
 import { collectableFields } from '../capture/diagnostics.js';
-import { logEvent, recordAttachmentRun, recordMailClick, recordMailOpen, resolveToken } from '../capture/evidenceStore.js';
+import { logEvent, recordAttachmentRun, resolveToken } from '../capture/evidenceStore.js';
 import { ENGAGE_BASE } from '../capture/engageScript.js';
+import { servePixel, serveTrace } from '../capture/trackEndpoints.js';
 
 // 拼在冻结的 ENGAGE_BASE 后面；端点集合由协议文档锁定，改名等于毁掉已经发出去的邮件
 const PIXEL = 'pixel';
@@ -50,8 +50,7 @@ const upload = multer({
   limits: { fileSize: MAX_FILE_BYTES, files: LIMITS.max_files_per_request, fields: LIMITS.max_fields, fieldSize: 64 * 1024 },
 });
 
-// 打开像素不论令牌真假都回 200 + 这张图，否则探测者能用状态码差出哪些 tk 是有效收件人链接
-const GIF_1X1 = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+// 打开像素响应（1x1 GIF、no-store）在 capture/trackEndpoints.js 里，站点端口与管理端口共用同一份
 
 /** 允许落盘的证据形态，认文件头不认自称的 MIME。白名单外一律不收，否则这个入口就成了别人手里的文件落地点。 */
 const EVIDENCE_KINDS = [
@@ -208,45 +207,21 @@ export function mountBeaconPlane(app) {
 
   /**
    * 邮件打开像素。无 tk 也照样回 1x1：网关预览和图片代理重试都会打到这里，报错等于把打开数算少。
-   * Cache-Control 必须 no-store，被缓存的像素在收件人重开邮件时不再回源，统计口径会失真。
+   * 实现在 capture/trackEndpoints.js，与各仿冒站端口共用一份，避免两边统计口径与响应头漂移。
    */
   router.get(`${ENGAGE_BASE}/${PIXEL}`, (req, res) => {
-    const token = req.query.tk;
-    if (token) recordMailOpen({ taskId: req.query.task, token, ip: clientIp(req), userAgent: req.headers['user-agent'] || '' });
-    res.writeHead(200, {
-      'Content-Type': 'image/gif',
-      'Content-Length': GIF_1X1.length,
-      'Cache-Control': 'no-store, no-cache, must-revalidate',
-    });
-    res.end(GIF_1X1);
+    const url = new URL(req.originalUrl, 'http://localhost');
+    servePixel(req, res, url);
   });
 
   /**
    * 邮件链接点击，先记账再放行：有 tk 时记一次 mail_open（点链接本身就是打开）加 mail_click，放行成功回 302。
    * 目标必须是当前生效授权白名单内的主机，否则这里退化成公共跳板；不合法时只回中性提示屏，读者是演练对象。
+   * 实现与仿冒站端口上的 /trace 共用，邮件链接因此可以整条落在站点端口上。
    */
   router.get(`${ENGAGE_BASE}/${TRACE}`, (req, res) => {
-    const token = req.query.tk;
-    const target = req.query.url;
-    const ip = clientIp(req);
-    const userAgent = req.headers['user-agent'] || '';
-    if (token) {
-      // 任务 ID 从库里取，不接受载荷自带的 task：归属只能由服务端签发的令牌决定，否则点击能记到别人的任务上
-      const visitor = resolveToken(token);
-      const taskId = visitor?.task_id ?? null;
-      recordMailOpen({ taskId, token, ip, userAgent });
-      recordMailClick({ taskId, token, ip, userAgent, url: target });
-    }
-    // 只放行 http/https：javascript: 和 data: 这类伪协议进不了这条判断，信标面不能变成送脚本的通道
-    if (typeof target === 'string' && /^https?:\/\//i.test(target)) {
-      const auth = findActive();
-      // isHostAuthorized 自己剥端口再逐字比；比的是当下生效的授权，不是签发链接时那张，窗口一关跳转立刻断掉
-      const host = new URL(target).host;
-      if (auth && isHostAuthorized(auth, host)) return res.redirect(target);
-      // 这屏是给点开邮件的人看的：说"不在演练授权范围内"等于通知他刚点开的是钓鱼链
-      return res.type('html').send(renderNoticePage('链接已失效', '该链接已失效，或指向的地址不再可用。请向发送方确认后再试。'));
-    }
-    res.type('html').send(renderNoticePage('已打开', '链接已在新窗口打开。'));
+    const url = new URL(req.originalUrl, 'http://localhost');
+    serveTrace(req, res, url);
   });
 
   /**

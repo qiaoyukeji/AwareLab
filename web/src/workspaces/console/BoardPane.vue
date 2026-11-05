@@ -95,7 +95,8 @@
       />
     </div>
 
-    <div class="lab-grid" style="--cols: 2">
+    <!-- align-items:start 让右卡按内容收高：默认 stretch 会把漏斗拉成一个半屏高的空盒子 -->
+    <div class="lab-grid" style="--cols: 2; align-items: start">
       <!-- 命中流水只摆最新 8 条（shownHits），再多就把开工检查挤出首屏 -->
       <LabPane title="命中流水" :hint="`最近 ${shownHits.length} 条 · 15 秒自动刷新`">
         <template #ops>
@@ -359,10 +360,11 @@ const funnelRows = computed(() => [
   { key: 'submitted', label: '已提交内容', value: funnel.value.submitted ?? 0, hint: '已留下完整记录', tone: 'danger' },
 ]);
 
-/** 漏斗条宽以打开数为分母；Math.max(2, …) 让 500 人打开 1 人提交那种小比例也看得见一根头，画成 0% 会被读成一个都没有 */
+/** 漏斗条宽以打开数为分母；Math.max(2, …) 让 500 人打开 1 人提交那种小比例也看得见一根头，画成 0% 会被读成一个都没有。
+ *  值为 0 时必须真的返回 0：min 2 会把「0 人」画成左端一个橙色圆点，看着像有数据。 */
 function pctOf(v) {
   const base = funnel.value.opened || 0;
-  if (!base) return 0;
+  if (!base || !v) return 0;
   return Math.max(2, Math.round((v / base) * 100));
 }
 

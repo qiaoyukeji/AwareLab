@@ -44,17 +44,18 @@
       </template>
       <!-- 一行 = 一个钓鱼网站，不是一条记录。整行可点与按钮 emit 同一个 open 事件，按钮上的 .stop 防它触发两次 -->
       <el-table :data="web" size="small" class="group-table" @row-click="(row) => $emit('open', row)">
-        <el-table-column label="钓鱼网页" min-width="180">
+        <el-table-column label="钓鱼网页" min-width="200">
           <template #default="{ row }">
             <div class="cell-main">
-              <span class="lab-strong">{{ row.label }}</span>
+              <span class="lab-strong cell-label" :title="row.label">{{ row.label }}</span>
               <span v-if="!row.exists" class="lab-chip is-danger">已收网</span>
             </div>
-            <div class="lab-hint is-mute cell-sub">{{ row.id.slice(0, 8) }}</div>
+            <!-- 监听地址降为副行：单开一列会把「最近活动」和操作列挤出可视区 -->
+            <div class="lab-hint is-mute cell-sub">
+              <span class="cell-addr">{{ row.address || '—' }}</span>
+              <span class="cell-sep">·</span>{{ row.id.slice(0, 8) }}
+            </div>
           </template>
-        </el-table-column>
-        <el-table-column label="监听" min-width="140">
-          <template #default="{ row }"><span class="lab-mono">{{ row.address || '—' }}</span></template>
         </el-table-column>
         <el-table-column label="状态" width="86">
           <template #default="{ row }">
@@ -65,9 +66,6 @@
         </el-table-column>
         <el-table-column label="上钩终端" width="92" align="right">
           <template #default="{ row }">{{ row.terminals }}</template>
-        </el-table-column>
-        <el-table-column label="页面打开" width="92" align="right">
-          <template #default="{ row }">{{ row.page_opens }}</template>
         </el-table-column>
         <el-table-column label="已提交" width="86" align="right">
           <template #default="{ row }">
@@ -83,15 +81,15 @@
             <span :class="row.unhandled ? 'is-pending' : 'lab-hint is-mute'">{{ row.unhandled }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="采到的字段" min-width="150">
+        <el-table-column label="采到的字段" min-width="140">
           <template #default="{ row }">
             <span class="lab-hint is-mute">{{ row.field_names.join('、') || '—' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="最近活动" width="150">
+        <el-table-column label="最近活动" width="140">
           <template #default="{ row }"><span class="lab-hint is-mute">{{ fmt(row.last_seen_at) }}</span></template>
         </el-table-column>
-        <el-table-column label="操作" width="96" fixed="right">
+        <el-table-column label="操作" width="118" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click.stop="$emit('open', row)">查看上钩记录</el-button>
           </template>
@@ -106,10 +104,10 @@
         <el-table-column label="钓鱼邮件" min-width="180">
           <template #default="{ row }">
             <div class="cell-main">
-              <span class="lab-strong">{{ row.label }}</span>
+              <span class="lab-strong cell-label" :title="row.label">{{ row.label }}</span>
               <span v-if="!row.exists" class="lab-chip is-danger">任务已删</span>
             </div>
-            <div class="lab-hint is-mute cell-sub">{{ row.subject || row.id.slice(0, 8) }}</div>
+            <div class="lab-hint is-mute cell-sub cell-label" :title="row.subject">{{ row.subject || row.id.slice(0, 8) }}</div>
           </template>
         </el-table-column>
         <el-table-column label="发送方式" width="110">
@@ -126,9 +124,6 @@
         <el-table-column label="邮件打开" width="92" align="right">
           <template #default="{ row }">{{ row.mail_opens }}</template>
         </el-table-column>
-        <el-table-column label="网页打开" width="92" align="right">
-          <template #default="{ row }">{{ row.page_opens }}</template>
-        </el-table-column>
         <el-table-column label="已提交" width="86" align="right">
           <template #default="{ row }">
             <span :class="row.submitted ? 'lab-strong is-hot' : ''">{{ row.submitted }}</span>
@@ -143,15 +138,15 @@
             <span :class="row.unhandled ? 'is-pending' : 'lab-hint is-mute'">{{ row.unhandled }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="采到的字段" min-width="150">
+        <el-table-column label="采到的字段" min-width="140">
           <template #default="{ row }">
             <span class="lab-hint is-mute">{{ row.field_names.join('、') || '—' }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="最近活动" width="150">
+        <el-table-column label="最近活动" width="130">
           <template #default="{ row }"><span class="lab-hint is-mute">{{ fmt(row.last_seen_at) }}</span></template>
         </el-table-column>
-        <el-table-column label="操作" width="96" fixed="right">
+        <el-table-column label="操作" width="118" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" @click.stop="$emit('open', row)">查看上钩记录</el-button>
           </template>
@@ -236,6 +231,10 @@ onMounted(load);
 .group-table :deep(.el-table__row) { cursor: pointer; }
 .cell-main { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .cell-sub { font-size: 11.5px; margin-top: 2px; }
+/* 组名可能很长，撑成两行会把副行挤到行外：统一单行省略，完整值放 title 提示 */
+.cell-label { display: block; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cell-sep { margin: 0 5px; color: var(--lab-ink-4); }
+.cell-addr { font-family: Consolas, "Cascadia Mono", monospace; }
 .is-hot { color: var(--lab-danger); }
 /* 未教育非 0 用 warn 不用 danger：欠的是要办的账，不是已经发生的事故 */
 .is-pending { color: var(--lab-warn); font-weight: 700; }

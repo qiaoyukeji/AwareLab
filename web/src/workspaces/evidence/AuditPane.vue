@@ -25,7 +25,9 @@
         <el-table-column prop="ip" label="来源" width="150" :formatter="(row) => ipOf(row)" />
         <el-table-column label="对象" min-width="220" show-overflow-tooltip>
           <template #default="{ row }">
-            <span class="lab-mono">{{ row.target_kind || '-' }}</span> {{ row.target_id }}
+            <!-- 对象 id 是 uuid，整串铺开会把「详情」挤出可视区：只留前 8 位，完整值进 title 与详情抽屉 -->
+            <span class="lab-mono">{{ row.target_kind || '-' }}</span>
+            <span :title="row.target_id">{{ (row.target_id || '').slice(0, 8) }}</span>
           </template>
         </el-table-column>
         <el-table-column label="详情" width="90">

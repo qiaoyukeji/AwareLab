@@ -11,7 +11,8 @@ import { clientIp } from '../platform/net/clientIp.js';
 import { gate, resolve } from '../security/mandate.js';
 import { renderCapturePage, renderLessonFallbackPage, renderNoticePage } from './pageCompiler.js';
 import { recordFormSubmit, recordPageOpen, resolveToken } from './evidenceStore.js';
-import { ENGAGE_ENDPOINT, LESSON_ENDPOINT, bootAfter } from './engageScript.js';
+import { ENGAGE_BASE, ENGAGE_ENDPOINT, LESSON_ENDPOINT, bootAfter } from './engageScript.js';
+import { servePixel, serveTrace } from './trackEndpoints.js';
 
 // 采集面直接对演练对象开放，没这道闸一个请求就能把内存打满；超这个量必然是在灌数据或塞文件
 const MAX_BODY = 512 * 1024;
@@ -114,6 +115,15 @@ export function buildSiteHandler(siteId) {
     // resolve 只在生效窗口内返回行，其它给 null 由 gate 换算 403/410；白名单外的 Host 不留任何记录
     const verdict = gate(resolve(site.authorization_id), { host: req.headers.host });
     if (!verdict.ok) return send(res, verdict.code, renderNoticePage('页面无法访问', verdict.reason));
+
+    // 邮件像素与跳转也要在站点端口上应答：邮件正文里的链接由 composer 改写成站点自己的 origin，
+    // 收件人点开时落在 8080 这类采集端口，而不是管理端 7778。两条都在门禁之后，授权失效时连像素也一起停
+    if (req.method === 'GET' && url.pathname === `${ENGAGE_BASE}/pixel`) {
+      return servePixel(req, res, url);
+    }
+    if (req.method === 'GET' && url.pathname === `${ENGAGE_BASE}/trace`) {
+      return serveTrace(req, res, url);
+    }
 
     if (req.method === 'POST' && url.pathname === ENGAGE_ENDPOINT) {
       const data = await readJson(req);

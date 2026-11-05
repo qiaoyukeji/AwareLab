@@ -6,8 +6,20 @@
 import { config, persistConfigValue, randomString } from '../platform/settings.js';
 import { get, all, run, nowIso } from '../platform/storage/rows.js';
 import { clientIp } from '../platform/net/clientIp.js';
-import { ok, unauthorized, badRequest, notFound, tooManyRequests } from '../platform/net/envelope.js';
+import { ok, unauthorized, badRequest, forbidden, notFound, tooManyRequests } from '../platform/net/envelope.js';
 import { writeAudit } from './audit.js';
+import { checkCredentials, findById, maskPhone, touchLogin, bindVerifiedPhone, phoneProblem } from './users.js';
+import { passwordProblem, hashPassword, verifyPassword } from './password.js';
+import { issueTicket, readTicket } from './ticket.js';
+import {
+  smsConfig,
+  smsEnabled,
+  smsReadyProblem,
+  sendVerifyCode,
+  checkVerifyCode,
+  sendThrottle,
+  noteSend,
+} from '../sms/sms.js';
 
 // 令牌两个载体：头优先、Cookie 兜底。名字由前端拦截器与端到端断言锁定，属冻结协议，只许加别名不许改原值
 export const TOKEN_HEADER = 'x-alab-token';
@@ -114,8 +126,11 @@ const UA_LIMIT = 200;
 const userAgentOf = (req) => String(req.headers['user-agent'] || '').slice(0, UA_LIMIT);
 
 /**
- * 登录：口令比对 + 爆破锁定 + 签发会话。404 来源不在白名单 / 429 锁定中 / 401 账号或密码错 / 200 {token, username, expires_at}。token 明文回给操作员是设计如此（前端放 x-alab-token 头上用）。
- * 优先级：白名单先于锁定先于口令比对；账号错与密码错回同一个 401 不给枚举留差异。口令是全等比较、config 明文存口令，不是生产级方案。副作用：INSERT sessions、Set-Cookie、失败记一次、成功清计数。
+ * 登录（第一步：账密）：口令比对 + 爆破锁定 + 短信二次验证。404 来源不在白名单 / 429 锁定中 / 401 账号或密码错 /
+ * 403 账号停用 / 200 直接发会话，或 200 带 sms 票据要求继续验码。
+ * 优先级：白名单先于锁定先于口令比对；账号错与密码错回同一个 401 不给枚举留差异。
+ * 短信策略：只对普通用户生效（管理员是后台兜底入口，短信服务挂了也必须进得去）；
+ * 已绑定并验证过的手机号走 login 票据，未绑定走 bind 票据先绑号再发会话。
  */
 export function login(req, res) {
   // 锁定键取 clientIp()：默认走 socket 对端地址、不可伪造；换成直读 X-Forwarded-For 的话攻击者每次换头就是新 IP，计数永远到不了 8 次
@@ -127,27 +142,140 @@ export function login(req, res) {
   }
   // req.body 可能整个不存在（没走 json 中间件或被非 JSON 请求打到），兜成空对象再解构
   const { username, password } = req.body || {};
-  if (username !== config.panel.username || password !== config.panel.password) {
+  const check = checkCredentials(username, password);
+  if (!check.user) {
     noteFailure(ip);
     // 不写审计：爆破是运行期噪声，把用户名带进 detail 有泄露口令线索的风险；失败计数已落 login_failures，事后仍能查哪个 IP 撞过多少次
-    return unauthorized(res, '账号或密码错误');
+    return check.disabled ? forbidden(res, '账号已停用，请联系管理员') : unauthorized(res, check.error);
   }
+  const user = check.user;
   clearFailures(ip);
+
+  // 短信认证只拦普通用户：管理员账号是平台的最后一把钥匙，不能因为阿里云欠费或密钥过期就整体锁死
+  if (user.role === 'user' && smsEnabled()) {
+    const purpose = user.phone && user.phone_verified_at ? 'login' : 'bind';
+    const ticket = issueTicket({ userId: user.id, purpose, phone: user.phone || '' });
+    return ok(res, {
+      sms_required: true,
+      purpose,
+      ticket,
+      // 号段掩码只是给界面显示「发到哪个号」，完整号码不回浏览器
+      phone_masked: maskPhone(user.phone),
+      interval_seconds: smsConfig().interval_seconds,
+    });
+  }
+  return issueSession(req, res, user);
+}
+
+/** 建会话：token + Cookie + sessions 行（记 user_id/role，后续权限判定只读这张表）。 */
+function issueSession(req, res, user) {
+  const ip = clientIp(req);
   // 令牌用 UUID：不可猜、不含任何用户信息，泄露到日志里也不能反推出账号（掩码口径见 audit.js）
   const token = crypto.randomUUID();
   // 会话时长来自 config.session_ttl_hours，缺省 12 小时：够一个工作日，又不至于跨天还有效
   // Number(x || 12) 只兜住没填/填 0，写成不可解析文本会得到 NaN、比不过过期判断，结果这张会话永不过期；configCheck 会就此项报错，别绕过它
   const ttl = Number(config.session_ttl_hours || 12) * 3600 * 1000;
   const expiresAt = Date.now() + ttl;
-  // 会话落库：token 是主键（重复签发不互相顶掉），expires_at 存毫秒整数，与 requireSession 的过期判断同一单位口径
-  // ip / user_agent 是 v5 迁移新加的列，老会话行为 NULL、列表显示来源未知（迁移只加列不回填）；UA 截到 200 字符防撑爆列
   run(
-    'INSERT INTO sessions (token, username, expires_at, created_at, ip, user_agent) VALUES (?,?,?,?,?,?)',
-    [token, username, expiresAt, nowIso(), normalizeIp(ip), userAgentOf(req)]
+    'INSERT INTO sessions (token, username, user_id, role, expires_at, created_at, ip, user_agent) VALUES (?,?,?,?,?,?,?,?)',
+    [token, user.username, user.id, user.role, expiresAt, nowIso(), normalizeIp(ip), userAgentOf(req)]
   );
-  // 头和 Cookie 两条通道都给：前端用返回体里的 token 带头，非 JS 场景靠 Cookie 兜底
+  touchLogin(user.id);
+  writeAudit(req, 'auth.login', {
+    targetKind: 'user',
+    targetId: user.id,
+    actor: user.username,
+    detail: { username: user.username, role: user.role },
+  });
   res.setHeader('Set-Cookie', cookieHeader(token, ttl, isTls(req)));
-  return ok(res, { token, username, expires_at: expiresAt });
+  return ok(res, {
+    token,
+    username: user.username,
+    role: user.role,
+    display_name: user.display_name || user.username,
+    expires_at: expiresAt,
+  });
+}
+
+/**
+ * 发登录/绑定验证码：body {ticket, phone?}。ticket 是登录第一步签的短期票据。
+ * - purpose=bind：手机号取 body.phone（管理员预填的号仅在没传时兜底），必须是合法 11 位号；
+ * - purpose=login：只用票据里的号，不接受前端换号，避免拿别人的手机号收码。
+ * 频控在本地做（60 秒/号，5 次/小时/号，20 次/小时/IP），过了才调用阿里云，失败也落流水。
+ */
+export async function sendSmsCode(req, res) {
+  const payload = readTicket(req.body?.ticket);
+  if (!payload) return badRequest(res, '验证已过期，请重新登录');
+  const user = findById(payload.u);
+  if (!user || user.status !== 'active') return unauthorized(res, '账号不可用，请联系管理员');
+  if (user.role === 'admin') return badRequest(res, '管理员账号不启用短信验证');
+  if (!smsEnabled()) return badRequest(res, '短信验证服务未开启');
+
+  let phone = payload.ph;
+  if (payload.p === 'bind') {
+    phone = String(req.body?.phone || payload.ph || '').trim();
+    const problem = phoneProblem(phone);
+    if (problem) return badRequest(res, problem);
+  }
+  if (!phone) return badRequest(res, '未绑定手机号，请先填写手机号');
+
+  const ip = clientIp(req);
+  const throttle = sendThrottle(phone, ip);
+  if (throttle) return tooManyRequests(res, throttle);
+  try {
+    const result = await sendVerifyCode(phone);
+    noteSend({ phone, purpose: payload.p, userId: user.id, ip, ok: true, message: 'sent', requestId: result.request_id });
+    return ok(res, {
+      sent: true,
+      phone_masked: maskPhone(phone),
+      interval_seconds: Number(smsConfig().interval_seconds || 60),
+      valid_time: Number(smsConfig().valid_time || 300),
+    });
+  } catch (error) {
+    noteSend({ phone, purpose: payload.p, userId: user.id, ip, ok: false, message: error.message });
+    return badRequest(res, error.message);
+  }
+}
+
+/**
+ * 校验验证码并完成登录：body {ticket, code, phone?}。
+ * 云端 PASS 之后：bind 票据写号并标已验证，再发会话；login 票据直接发会话。
+ * 失败统一 400「验证码错误或已过期」，不暴露是哪一步错。
+ */
+export async function verifySmsLogin(req, res) {
+  const payload = readTicket(req.body?.ticket);
+  if (!payload) return badRequest(res, '验证已过期，请重新登录');
+  const code = String(req.body?.code || '').replace(/\D/g, '');
+  if (code.length < 4) return badRequest(res, '请输入短信验证码');
+  const user = findById(payload.u);
+  if (!user || user.status !== 'active') return unauthorized(res, '账号不可用，请联系管理员');
+
+  let phone = payload.ph;
+  if (payload.p === 'bind') {
+    phone = String(req.body?.phone || payload.ph || '').trim();
+    const problem = phoneProblem(phone);
+    if (problem) return badRequest(res, problem);
+  }
+  if (!phone) return badRequest(res, '未绑定手机号，请先填写手机号');
+
+  let result;
+  try {
+    result = await checkVerifyCode(phone, code);
+  } catch (error) {
+    return badRequest(res, error.message);
+  }
+  if (!result.pass) {
+    writeAudit(req, 'auth.sms_fail', { targetKind: 'user', targetId: user.id, actor: user.username, detail: { result: result.result } });
+    return badRequest(res, '验证码错误或已过期');
+  }
+
+  let nextUser = user;
+  if (payload.p === 'bind') {
+    nextUser = bindVerifiedPhone(user.id, phone) || user;
+    writeAudit(req, 'auth.phone_bind', { targetKind: 'user', targetId: user.id, actor: user.username, detail: { phone: maskPhone(phone) } });
+  }
+  writeAudit(req, 'auth.sms_pass', { targetKind: 'user', targetId: user.id, actor: user.username, detail: { purpose: payload.p } });
+  return issueSession(req, res, nextUser);
 }
 
 /**
@@ -162,8 +290,10 @@ export function logout(req, res) {
 }
 
 /**
- * 管理面会话守卫（中间件）：校验通过后挂上 req.session 供审计与 whoami 读；没带令牌或未登录、令牌查不到/过期都回 401，前端据此统一跳登录页。
- * expires_at 是毫秒整数，历史/迁移给成字符串必须靠 Number() 归一再比。会话不做滑动续期：到期就到期，管理平台挂着十几小时不登录还在线本身就是没人看着的后台。
+ * 管理面会话守卫（中间件）：校验通过后挂上 req.session 与 req.user 供审计、权限与 whoami 读；
+ * 没带令牌、令牌查不到/过期、账号被停用都回 401，前端据此统一跳登录页。
+ * expires_at 是毫秒整数，历史/迁移给成字符串必须靠 Number() 归一再比。会话不做滑动续期。
+ * 每次请求回查 users：停用账号立即失效，不必等「退出所有会话」，也防住 v8 之前的老会话（user_id 为空）。
  */
 export function requireSession(req, res, next) {
   const token = readToken(req);
@@ -172,16 +302,40 @@ export function requireSession(req, res, next) {
   if (!session || Number(session.expires_at) < Date.now()) {
     return unauthorized(res, '登录已过期，请重新登录');
   }
+  const user = session.user_id ? findById(session.user_id) : null;
+  if (!user) return unauthorized(res, '登录已过期，请重新登录');
+  if (user.status !== 'active') return unauthorized(res, '账号已停用，请联系管理员');
   req.session = session;
+  req.user = user;
   return next();
 }
 
 /**
- * 当前登录身份：必须已过 requireSession（挂到未守卫的路由会抛 TypeError），200 回 {username, expires_at}。
- * 只回这两个字段，口令与令牌都不出现，页面读得到等于脚本也读得到。
+ * 管理员守卫：必须已过 requireSession。普通用户访问账号管理、短信配置、运行参数时回 403。
+ * 权限只认库里的 role，不认前端传来的任何字段；会话里那份 role 只用于列表展示。
+ */
+export function requireAdmin(req, res, next) {
+  if (req.user?.role !== 'admin') return forbidden(res, '仅管理员可执行此操作');
+  return next();
+}
+
+/**
+ * 当前登录身份：必须已过 requireSession，200 回 {username, role, display_name, phone, phone_verified, expires_at}。
+ * 口令与令牌都不出现；手机号掩码，前端只用来显示「已绑定 138****8000」。
  */
 export function whoami(req, res) {
-  return ok(res, { username: req.session.username, expires_at: Number(req.session.expires_at) });
+  const user = req.user;
+  const cfg = smsConfig();
+  return ok(res, {
+    username: user.username,
+    role: user.role,
+    display_name: user.display_name || user.username,
+    phone: maskPhone(user.phone),
+    phone_verified: Boolean(user.phone_verified_at),
+    // 普通用户看到的是「本平台是否要求验码」，管理员据此决定是否显示账号管理入口
+    sms_enabled: Boolean(cfg.enabled) && !smsReadyProblem(cfg),
+    expires_at: Number(req.session.expires_at),
+  });
 }
 
 /**
@@ -227,8 +381,6 @@ export function revokeAllSessions(req, res) {
 
 // 最短 8 位：口令是随机路径+口令两道门的第二道，与首次生成的随机口令等长，低于它等于允许把安全水位往下调
 const MIN_PASSWORD = 8;
-// 最长 64 位：挡住拿 1MB 字符串当口令把配置文件写爆的尝试
-const MAX_PASSWORD = 64;
 
 /**
  * 修改后台口令：写回 config.yaml（只换那一行，保留操作员注释）+ 内存同步立即生效 + 清空全部会话（旧令牌一律作废，改口令即有效撤销）+ 一条 panel.password_change 审计。
@@ -236,23 +388,34 @@ const MAX_PASSWORD = 64;
  */
 export function changePassword(req, res) {
   const { current_password: currentPassword, new_password: newPassword } = req.body || {};
-  if (currentPassword !== config.panel.password) return unauthorized(res, '当前密码不正确');
+  const user = req.user;
+  if (!user) return unauthorized(res, '未登录');
+  const current = String(currentPassword == null ? '' : currentPassword);
+  const currentOk = user.password_hash
+    ? verifyPassword(current, user.password_hash)
+    : current === config.panel.password;
+  if (!currentOk) return unauthorized(res, '当前密码不正确');
   const next = String(newPassword == null ? '' : newPassword);
-  if (next.length < MIN_PASSWORD) return badRequest(res, `新密码至少 ${MIN_PASSWORD} 位`);
-  if (next.length > MAX_PASSWORD) return badRequest(res, `新密码最多 ${MAX_PASSWORD} 位`);
-  if (next === config.panel.password) return badRequest(res, '新密码不能与当前密码相同');
+  const problem = passwordProblem(next);
+  if (problem) return badRequest(res, problem);
+  if (user.password_hash && verifyPassword(next, user.password_hash)) return badRequest(res, '新密码不能与当前密码相同');
 
   const updatedAt = nowIso();
-  // 先落盘再改内存：写文件失败时抛出由错误中间件回 500，内存 config 不变，不会出现这次能登重启后登不上的半截状态
-  persistConfigValue('panel', 'password', next);
-  persistConfigValue('panel', 'password_updated_at', updatedAt);
-  run('DELETE FROM sessions');
+  run('UPDATE users SET password_hash=?, updated_at=? WHERE id=?', [hashPassword(next), updatedAt, user.id]);
+  if (user.role === 'admin') {
+    // 先落盘再改内存：写文件失败时抛出由错误中间件回 500，内存 config 不变，不会出现这次能登重启后登不上的半截状态
+    persistConfigValue('panel', 'password', next);
+    persistConfigValue('panel', 'password_updated_at', updatedAt);
+  }
+  // 只作废这个账号自己的会话：多账号后若清整表，普通用户改一次口令会把正在值守的管理员一起踢下线
+  run('DELETE FROM sessions WHERE user_id=?', [user.id]);
   writeAudit(req, 'panel.password_change', {
-    targetKind: 'panel',
-    detail: { username: req.session.username, password_updated_at: updatedAt },
+    targetKind: 'user',
+    targetId: user.id,
+    detail: { username: user.username, password_updated_at: updatedAt },
   });
   res.setHeader('Set-Cookie', cookieHeader('', 0, isTls(req)));
-  return ok(res, { username: config.panel.username, password_updated_at: updatedAt });
+  return ok(res, { username: user.username, password_updated_at: updatedAt });
 }
 
 /**

@@ -39,6 +39,9 @@ const DEFAULTS = {
     port: 7778,
     // 管理面默认只听本机：随机路径不是鉴权，同网段撞库成功就能拿走全部演练数据；要远程访问在 config.yaml 显式写 bind
     bind: '127.0.0.1',
+    // 对外入口前缀（如 https://lab.example.com:7778）：挂在反向代理后面时，req.headers.host 往往是内网地址，
+    // 邮件里的像素/兜底链接要写对外可达的地址。留空则按请求 Host 现拼，未配置时不改变任何既有行为
+    public_url: '',
     // 首次启动随机生成、明文落在 config.yaml（所以那文件绝不能提交）；登录是全等比较不做 hash，这两个值等于口令本体
     username: randomString(8),
     password: randomString(8),

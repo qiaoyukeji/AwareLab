@@ -283,6 +283,68 @@ function addRecordDispositionColumn(db) {
   db.exec('CREATE INDEX IF NOT EXISTS idx_records_disposition ON records (disposition)');
 }
 
+/**
+ * 给素材、邮件任务与学习页补"内置来源"和"目标站点"三处关联。
+ * builtin_key 非空表示这一行由平台内置模板种下，前端据此打标、模板库据此恢复原样；
+ * mail_tasks.site_id 把一封邮件钉到某个仿冒站，邮件里的像素、{{site_url}} 与跳转链接才落在站点端口而不是管理端。
+ * 四列都可空：老库既有素材照常使用，没绑定站点的老任务回退到管理端地址。
+ */
+function addLibraryColumns(db) {
+  // 每列单独探测：允许历史库只成功加过其中一部分，重复 ALTER 会让启动直接失败
+  const addColumn = (table, column, ddl) => {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+    if (columns.some((item) => item.name === column)) return;
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  };
+  addColumn('mail_tasks', 'site_id', 'site_id TEXT');
+  addColumn('web_templates', 'builtin_key', 'builtin_key TEXT');
+  addColumn('mail_templates', 'builtin_key', 'builtin_key TEXT');
+  addColumn('learn_pages', 'builtin_key', 'builtin_key TEXT');
+}
+
+// v8：账号体系与短信认证。users 是唯一身份源（管理端与普通用户同表，role 区分），sessions 补 user_id/role；
+// sms_send_log 记每次发码，既做频控也做供应商对账。口令只存 scrypt 哈希，手机号明文存（要发给短信网关）。
+const USERS_AND_SMS = `
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE,
+  display_name TEXT,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'user',
+  status TEXT NOT NULL DEFAULT 'active',
+  phone TEXT,
+  phone_verified_at TEXT,
+  created_at TEXT,
+  updated_at TEXT,
+  last_login_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+CREATE TABLE IF NOT EXISTS sms_send_log (
+  id TEXT PRIMARY KEY,
+  phone TEXT NOT NULL,
+  purpose TEXT NOT NULL,
+  user_id TEXT,
+  client_ip TEXT,
+  provider_request_id TEXT,
+  ok INTEGER NOT NULL DEFAULT 0,
+  message TEXT,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sms_log_phone ON sms_send_log(phone, created_at);
+`;
+
+function addUsersAndSms(db) {
+  db.exec(USERS_AND_SMS);
+  const addColumn = (table, column, ddl) => {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+    if (columns.some((item) => item.name === column)) return;
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  };
+  // 老会话行这两列为 NULL：requireSession 遇到 NULL 时按「无身份」处理，强制重登一次即可回填
+  addColumn('sessions', 'user_id', 'user_id TEXT');
+  addColumn('sessions', 'role', 'role TEXT');
+}
+
 // 迁移清单：数组顺序即执行顺序，version 严格递增且永不改历史条目。up 是字符串就直接 exec，是函数就先查表结构（加列专用）。
 // 加迁移只在尾部 push version=上一项+1；改已发布条目的 SQL 会让老库错位。
 const MIGRATIONS = [
@@ -298,6 +360,10 @@ const MIGRATIONS = [
   { version: 5, label: '会话来源与登录失败落库', up: (db) => { addSessionTraceColumns(db); db.exec(LOGIN_FAILURES); } },
   // v6：records 加 disposition，历史行留 NULL=未处置
   { version: 6, label: '上钩记录处置状态', up: addRecordDispositionColumn },
+  // v7：内置模板来源标记 + 邮件任务绑定仿冒站，修掉邮件链接落到管理端端口的问题
+  { version: 7, label: '内置模板与邮件站点绑定', up: addLibraryColumns },
+  // v8：账号体系（管理员/普通用户）与短信验证码登录，sessions 记 user_id/role，发码流水落 sms_send_log
+  { version: 8, label: '账号体系与短信认证', up: addUsersAndSms },
 ];
 
 // 最新结构版本 = 迁移数组最后一项，启动横幅与自检比对的就是它；别手写成常量
