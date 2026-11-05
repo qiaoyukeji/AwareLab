@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="AwareLab">
+  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M22 8a14 14 0 0 1-14 14" stroke-width="3.4"/>
+    <path d="M29 8a21 21 0 0 1-21 21" stroke-width="2.6"/>
+    <circle cx="27" cy="15" r="3.4" stroke-width="3"/>
+    <path d="M27 18.4V34a9.5 9.5 0 0 0 19 0v-4.5" stroke-width="4.6"/>
+    <path d="M46 29.5 49.4 31.9" stroke-width="3.6"/>
+  </g>
+</svg>

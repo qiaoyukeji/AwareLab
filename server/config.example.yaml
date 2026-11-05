@@ -1,0 +1,26 @@
+# AwareLab 配置样例
+# 复制为 server/config.yaml 后修改；直接启动 server 时若该文件不存在，会随机生成后台路径与管理员口令。
+# config.yaml 与 data/ 都不进版本库。
+
+panel:
+  path: 00000000000000000000000000000000   # 管理面随机路径（32 位十六进制），改成自己的随机串
+  port: 7778
+  username: change-me
+  password: change-me
+  bind: 127.0.0.1          # 默认只听本机；需要远程管理时才显式改写
+  trust_proxy: false       # 仅当管理面挂在 nginx 等反向代理后面才置 true，否则来源 IP 可被 X-Forwarded-For 伪造
+
+capture:
+  port_range: [8000, 9999]   # 采集面允许占用的端口区间
+  bind_host: 0.0.0.0
+
+mail:
+  default_dry_run: true            # 沙箱投递：只渲染并落 data/outbox/*.eml，不真发
+  default_send_interval_ms: 3000   # 收件人之间的发送间隔
+
+exercise:
+  require_authorization: true      # 授权硬门禁：无生效授权时拒绝建站与投递，不提供在线关闭
+  retention_days: 180              # 上钩证据、事件与落盘产物的保留天数，0 表示不自动清理
+  audit_retention_days: 365        # 操作审计独立保留期，要比它记录的证据活得久
+
+session_ttl_hours: 12

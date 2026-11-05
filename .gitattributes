@@ -1,0 +1,29 @@
+# 行尾与文本属性：交给 git 统一判定，避免 Windows 检出时刷出几十条
+# "CRLF will be replaced by LF" 警告（GOV-03 实测：不加这个文件时 checkout 产生 37 条警告）。
+#
+# 为什么用 text=auto 而**不是** `* text=auto eol=lf`：
+#   eol=lf 会压过本机 core.autocrlf=true，把工作区文件悄悄换成 LF。
+#   本项目靠「按行 diff 证明只加了注释」做验证（见 CONTRIBUTING 注释规范），
+#   行尾一旦整体翻转，每一行都会被算成改动，这道门就废了。
+#   text=auto 的语义正好：入库按内容判定文本并归一化，检出跟随本机设置。
+* text=auto
+
+# 二进制必须显式声明：让 Windows 的图标/字体不被当文本做行尾替换（改了就是损坏）
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
+
+# 明确按文本处理并锁定行尾的只有这一类：会被 shell/node 直接解析的脚本，
+# 混进 CRLF 会在 Linux 上跑出 bad interpreter / 语法错误
+*.sh text eol=lf
+
+# SQLite 库文件与演练产物绝不进仓库（见 .gitignore），这里只是兜底：
+# 万一有人手工塞进来，也不要做行尾转换
+*.db binary
+*.sqlite binary

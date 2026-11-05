@@ -1,0 +1,25 @@
+# 编辑器统一约定（GOV-03）：只定「不影响 git 行尾」的那几项。
+#
+# 为什么这里**故意不写 end_of_line**：
+#   本仓库的源文件在本机是 CRLF（core.autocrlf=true 的检出结果），
+#   .editorconfig 若写 lf，编辑器会在保存时把整文件翻成 LF —— 一次保存造出满屏 diff，
+#   也会让「按行 diff 证明只加了注释」这道验证门失效。
+#   行尾归一化是 git 的职责（见 .gitattributes），不是编辑器的。
+root = true
+
+[*]
+charset = utf-8
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+# 本项目源码大量中文文案与注释：不设 max_line_length，否则要么折行破坏可读性，
+# 要么让 formatter 去动本来不该动的字符串字面量
+max_line_length = off
+
+[*.{yaml,yml}]
+indent_size = 2
+
+[*.md]
+# Markdown 里两个空格结尾是「硬换行」语法，不能被裁掉
+trim_trailing_whitespace = false

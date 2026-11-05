@@ -1,0 +1,2 @@
+﻿编号,级别,发现渠道,现象（可见事实）,根因（代码位置）,修复动作,涉及文件,回归断言（命令 + 期望）,验证人,验证日期,状态,遗留风险
+DEF-00,P0,手工测试,「示例行：创建钓鱼网站后填写专属链接提交，上钩记录没有采集到」,「示例行：采集运行时未给无 type 的按钮绑定提交（server/src/capture/engageScript.js）」,「示例行：表单无显式提交控件时给动作按钮兜底绑定」,"server/src/capture/engageScript.js; server/src/capture/diagnostics.js","node server/scripts/qa.mjs → 提交触发点体检项通过；node server/scripts/selftest.mjs → 208 条全绿",张三,2026-11-04,已闭环,「示例行：老模板用 onclick 提交时仍依赖兜底」

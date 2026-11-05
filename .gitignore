@@ -1,0 +1,56 @@
+# 依赖
+node_modules/
+
+# 构建产物
+web/dist/
+web/.vite/
+
+# 运行期配置：含后台路径、账号密码，只留本机
+server/config.yaml
+
+# 演练数据：采集到的凭据、邮件产物、附件、截图
+server/data/
+
+# 临时调试文件
+*.log
+.DS_Store
+
+# 一次性验证脚本的隔离副本（含配置、演练数据与浏览器配置）
+.verify-ui/
+.verify-shots/
+server/.verify-mail/
+server/.verify-mail-*/
+server/.verify-screens/
+server/.verify-screens-*/
+
+# 自测隔离副本（临时数据目录，含演练数据）
+server/.selftest/
+# 人工走查用的隔离副本（同上，含配置与演练数据，绝不进仓库）
+server/.functional/
+# QA 用例套件的隔离副本（同上，含配置、演练数据与沙箱邮件）
+server/.qa/
+# 一次性验证用的临时副本：任何以 .qa- 开头的目录都按「含演练数据的副本」处理
+server/.qa-*/
+# 库文件快照（含凭据）：任何位置的 .db/.sqlite/.wal 都不许进仓库，
+# 这条兜底是给「备份/清理/迁移脚本意外落盘」留的——真数据在 server/data/ 已被上面覆盖
+*.db
+*.sqlite
+*.db-wal
+*.db-shm
+# purge/备份脚本的落盘目录
+server/data/backup/
+
+# 历史基线快照（仅本地，不进仓库）
+.baseline-pre-refactor/
+# 本机编辑器/终端在工作区根生成的缓存目录（Windows 环境变量未展开时留下的痕迹，非项目内容）
+%SystemDrive%/
+# 走查/截图用的临时隔离实例与浏览器 profile（脚本会自行清理，兜底忽略）
+.verify-review/
+server/.verify-review/
+server/.verify-review-*/
+server/.verify-sms/
+server/.verify-sms-*/
+server/.verify-sms-ui/
+# 一次性联调/截图脚本（跑完即删，别把带临时口令的脚本提交上去）
+server/tmp-*.mjs
+tmp-*.mjs

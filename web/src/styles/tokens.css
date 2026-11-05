@@ -1,0 +1,73 @@
+/* AwareLab 设计令牌：石墨底 + 竹青主色，紧边框、低圆角。只定义 CSS 自定义属性与三条全局重置，组件观感在 panes.css 和各 .vue 的 scoped 里。
+ * 命名 --lab-<语义>-<层级>，不与 --el-* 撞名；main.js 里本文件紧跟 element-plus/dist/index.css 之后 import，靠后加载者赢覆盖 --el-*，调换这两行整站会退回默认蓝。
+ * 页面一律取这里的令牌，不写死十六进制色值；随机路径、口令这类值不许出现在 CSS 或构建产物里。 */
+:root {
+  /* ink 最深（顶栏底、页标题），ink-2 正文，ink-3 次要说明，ink-4 注脚。ink-4 白底对比度只有 2.6:1，
+   * 只用在扫一眼不看也行的注脚上；正文、链接、表单标签最低 ink-3。 */
+  --lab-ink: #15202b;
+  --lab-ink-2: #2c3a48;
+  --lab-ink-3: #5c6b7a;
+  --lab-ink-4: #93a1ae;
+  --lab-line: #d9e1e8;
+  --lab-line-2: #eaf0f4;
+  --lab-fill: #eff3f6;
+  --lab-fill-2: #f7fafc;
+  --lab-surface: #ffffff;
+  /* accent 用于描边与文字，accent-2 是 hover 档，accent-soft 只当底色不当字色 */
+  --lab-accent: #0f766e;
+  --lab-accent-2: #12897f;
+  --lab-accent-soft: #e2f1ef;
+  /* warn=能做但要先看一眼（授权不齐、素材缺项）；danger=真出问题（已收网、平台已锁、推送失败）；
+   * ok=正常（授权生效、监听在跑、推送成功）。四个语义色各配一个 -soft 浅底，成对使用，不再新增第五套 */
+  --lab-warn: #a8600c;
+  --lab-warn-soft: #fbf1e0;
+  --lab-danger: #b02a37;
+  --lab-danger-soft: #fbe9eb;
+  --lab-ok: #14683a;
+  --lab-ok-soft: #e4f2e9;
+  --lab-r-sm: 3px;
+  --lab-r: 5px;
+  --lab-r-lg: 8px;
+  /* gap 同时是栅格 gap、面板下边距和面板内 padding，取同一个值两栏的缝才和缩进对齐 */
+  --lab-gap: 14px;
+  /* gap-sm 目前只有这一处定义、没有任何 var() 引用它（行内间距都在各 css/scoped 里直接写了 6px/8px），留着当 8px 档的占位；清理时删掉这行，不再造第二个同值令牌 */
+  --lab-gap-sm: 8px;
+  /* 改 --lab-top-h 要连着看 panes.css 的 .lab-top，那里按这个高度摆品牌标和阶段钮 */
+  --lab-top-h: 54px;
+  --lab-max: 1600px;
+
+  /* 走 element-plus 自带的 CSS 变量通道（不引它的 scss 源码做覆盖），组件库和 .lab-* 读同一批令牌，颜色才不会两边跑。
+   * 这里只覆盖实际用到的那几个，EP 升级新增的变量保持其默认值。改基础字号必须连 --el-font-size-base 一起改，否则自写文字和组件文字分成两号。 */
+  --el-color-primary: var(--lab-accent);
+  --el-color-primary-light-3: var(--lab-accent-2);
+  --el-color-primary-light-9: var(--lab-accent-soft);
+  --el-color-warning: var(--lab-warn);
+  --el-color-danger: var(--lab-danger);
+  --el-color-success: var(--lab-ok);
+  --el-border-radius-base: var(--lab-r);
+  --el-border-radius-small: var(--lab-r-sm);
+  --el-font-size-base: 13px;
+  --el-text-color-primary: var(--lab-ink-2);
+  --el-text-color-regular: var(--lab-ink-3);
+  --el-text-color-secondary: var(--lab-ink-4);
+  --el-border-color: var(--lab-line);
+  --el-border-color-light: var(--lab-line-2);
+  --el-fill-color-blank: var(--lab-surface);
+}
+
+/* 让面板的 padding 与边框不撑破栅格，.lab-grid 的 minmax(0,1fr) 才成立 */
+* { box-sizing: border-box; }
+/* margin:0 清掉浏览器默认 8px 外边距，不清顶栏右侧会漏出一条竖白边；三层撑满后 .lab-shell 才能用 height:100% */
+html, body, #app { height: 100%; margin: 0; }
+
+body {
+  background: var(--lab-fill);
+  color: var(--lab-ink-2);
+  /* 系统优先，不引 webfont：管理台要能在内网离线跑，字体请求外发也多一条隐私面 */
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* 顶栏与授权提示条里的链接由 panes.css 的 .lab-stage / .lab-top-btn / .lab-gate a 覆盖颜色 */
+a { color: var(--lab-accent); }
