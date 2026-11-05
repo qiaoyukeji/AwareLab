@@ -21,7 +21,7 @@ import {
 } from '../platform/configCheck.js';
 import { loginSecurityStatus, requireAdmin } from '../security/session.js';
 import { retentionStatus, runRetentionSweep } from '../platform/maintenance.js';
-import { smsConfig, maskedSmsConfig, saveSmsConfig, smsReadyProblem } from '../sms/sms.js';
+import { smsConfig, maskedSmsConfig, saveSmsConfig, smsReadyProblem, normalizeTemplateParam } from '../sms/sms.js';
 
 export const platformApi = express.Router();
 
@@ -161,6 +161,11 @@ platformApi.put('/settings/:key', requireAdmin, (req, res) => {
       },
     });
     if (problem) return ok(res, { ...maskedSmsConfig(), warning: `已保存，但还不能启用：${problem}` });
+    // 模板参数写错是最常见的发码失败原因，保存时就提示，不必等阿里云回 isv.INVALID_PARAMETERS
+    const paramProblem = incoming?.template_param !== undefined
+      ? normalizeTemplateParam(incoming.template_param).problem
+      : null;
+    if (paramProblem) return ok(res, { ...maskedSmsConfig(), warning: `已保存；${paramProblem}` });
     return ok(res, maskedSmsConfig());
   }
   if (req.params.key === 'ai') {

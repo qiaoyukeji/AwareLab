@@ -124,7 +124,7 @@ npm run build                     # 产出 web/dist，由 server 直接托管
 | `exercise.retention_days` | 上钩证据、事件与落盘产物的保留天数，到期由保留期清理删除，`0` 为不自动清理 |
 | `exercise.audit_retention_days` | 操作审计的独立保留期，默认比证据长 |
 | `session_ttl_hours` | 管理会话有效期 |
-| `sms.*`（界面维护） | 短信认证不写进 config.yaml：AccessKey、签名、模板 CODE、码长、有效期、重发间隔与网关地址存在设置的 `sms` 键里，密钥只以掩码回显；管理员在「系统设置 · 短信认证」里开关 |
+| `sms.*`（界面维护） | 短信认证不写进 config.yaml：AccessKey、签名、模板 CODE、码长、有效期、重发间隔与网关地址存在设置的 `sms` 键里，密钥只以掩码回显；管理员在「系统设置 · 短信认证」里开关。模板参数只填模板里的**其它**变量，验证码由阿里云生成并填入 `${code}`，写 `code` 会被阿里云判为模板与参数不匹配 |
 
 环境变量 `AWARELAB_CONFIG` 指定配置文件位置，`AWARELAB_DATA` 指定数据目录（端到端验证用它隔离到临时库）。
 
@@ -163,7 +163,7 @@ server/src/
   channels/        管理面装配、信标面
 web/src/
   ui/              外壳（左侧导航 + 顶栏）、标签与面板等共享组件、设计令牌消费
-  workspaces/      7 个工作区及其面板；mandate/MandateDialog.vue 是简化后的授权登记表单，material/LibraryPane.vue 是模板库
+  workspaces/      8 个工作区及其面板；mandate/MandateDialog.vue 是简化后的授权登记表单，material/LibraryPane.vue 是模板库，platform/AccountsPane.vue 是账号管理
   styles/          tokens.css 设计令牌 + panes.css 版式
   utils/           time.js 本机时区格式（UTC 存、本地显）、sanitize.js 富文本净化
   components/      富文本编辑器与图表

@@ -133,8 +133,11 @@
           <el-form-item label="重发间隔（秒）">
             <el-input-number v-model="sms.interval_seconds" :min="30" :max="600" :step="10" controls-position="right" />
           </el-form-item>
-          <el-form-item label="模板参数">
-            <el-input v-model="sms.template_param" placeholder='{"code":"##code##"}' />
+          <el-form-item label="模板参数（其它变量，可留空）">
+            <el-input v-model="sms.template_param" placeholder='{"name":"张三"}' />
+            <div class="lab-hint is-mute" style="margin-top: 4px">
+              验证码由阿里云生成并填入模板的 <code>${code}</code>，这里不要再写 code；模板没有其它变量就留空。
+            </div>
           </el-form-item>
         </div>
 
@@ -508,7 +511,7 @@ const sms = reactive({
   access_key_secret: '',
   sign_name: '',
   template_code: '',
-  template_param: '{"code":"##code##"}',
+  template_param: '{}',
   code_length: 6,
   valid_time: 300,
   interval_seconds: 60,

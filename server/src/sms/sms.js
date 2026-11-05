@@ -17,8 +17,9 @@ export const SMS_DEFAULT = {
   access_key_secret: '',
   sign_name: '',
   template_code: '',
-  // 模板变量名固定 code：阿里云按 ##code## 占位注入随机码，模板里写 ${code} 即可
-  template_param: '{"code":"##code##"}',
+  // 验证码由阿里云生成并注入模板的 ${code}，本地再传 code 会让模板变量对不上（isv.INVALID_PARAMETERS）。
+  // 这里只放模板里的其它变量，例如 {"name":"张三"}；没有其它变量就留空对象。
+  template_param: '{}',
   code_length: 6,
   valid_time: 300,
   // 同号 60 秒内重复请求直接拒绝（阿里云侧也有 Interval，这里先挡一层，省一次外呼）
@@ -27,10 +28,37 @@ export const SMS_DEFAULT = {
   scheme_name: '',
 };
 
+/**
+ * 模板参数归一：必须是 JSON 对象；`code` 键一律剔除——验证码是云端生成的，
+ * 客户端再传一个字面量 code 会触发「请检查模板内容与模板参数是否匹配」。
+ */
+export function normalizeTemplateParam(raw) {
+  const text = String(raw ?? '').trim();
+  if (!text) return { json: '{}', problem: null };
+  let value;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return { json: '{}', problem: '模板参数不是合法 JSON，已按空参数保存' };
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { json: '{}', problem: '模板参数必须是 JSON 对象，已按空参数保存' };
+  }
+  const droppedCode = Object.prototype.hasOwnProperty.call(value, 'code');
+  delete value.code;
+  return {
+    json: JSON.stringify(value),
+    problem: droppedCode ? '模板参数里的 code 已忽略：验证码由阿里云生成，模板里写 ${code} 即可' : null,
+  };
+}
+
 /** 合并默认值：老配置缺字段时补默认，避免界面读到 undefined。 */
 export function smsConfig() {
   const stored = getSetting('sms', SMS_DEFAULT) || {};
-  return { ...SMS_DEFAULT, ...stored };
+  const cfg = { ...SMS_DEFAULT, ...stored };
+  // 读时也归一一次：1.5.0 存进去的 {"code":"##code##"} 不该继续显示在界面上
+  cfg.template_param = normalizeTemplateParam(cfg.template_param).json;
+  return cfg;
 }
 
 /** 读给前端：密钥、AccessKeyId 一律掩码，只保留「有没有配」的信息。 */
@@ -71,6 +99,7 @@ export function saveSmsConfig(incoming) {
   next.code_length = Math.min(8, Math.max(4, Number(next.code_length) || SMS_DEFAULT.code_length));
   next.valid_time = Math.min(1800, Math.max(60, Number(next.valid_time) || SMS_DEFAULT.valid_time));
   next.interval_seconds = Math.min(600, Math.max(30, Number(next.interval_seconds) || SMS_DEFAULT.interval_seconds));
+  next.template_param = normalizeTemplateParam(next.template_param).json;
   if (!next.endpoint) next.endpoint = SMS_DEFAULT.endpoint;
   setSetting('sms', next);
   return next;
@@ -167,19 +196,19 @@ async function callRpc(action, bizParams, cfg) {
 export async function sendVerifyCode(phone, cfg = smsConfig()) {
   const problem = smsReadyProblem(cfg);
   if (problem) throw new Error(`短信认证未配置完整：${problem}`);
-  const body = await callRpc(
-    'SendSmsVerifyCode',
-    {
-      PhoneNumber: phone,
-      SignName: cfg.sign_name,
-      TemplateCode: cfg.template_code,
-      TemplateParam: cfg.template_param || SMS_DEFAULT.template_param,
-      CodeLength: String(cfg.code_length),
-      ValidTime: String(cfg.valid_time),
-      Interval: String(cfg.interval_seconds),
-    },
-    cfg
-  );
+  // 兼容旧配置：库里可能还存着 {"code":"##code##"}，发码时再归一一次，避免必须回后台改一遍才生效
+  const templateParam = normalizeTemplateParam(cfg.template_param).json;
+  const bizParams = {
+    PhoneNumber: phone,
+    SignName: cfg.sign_name,
+    TemplateCode: cfg.template_code,
+    CodeLength: String(cfg.code_length),
+    ValidTime: String(cfg.valid_time),
+    Interval: String(cfg.interval_seconds),
+  };
+  // 模板没有其它变量时整个参数都不传：空对象同样会被判「参数与模板不匹配」
+  if (templateParam && templateParam !== '{}') bizParams.TemplateParam = templateParam;
+  const body = await callRpc('SendSmsVerifyCode', bizParams, cfg);
   return { request_id: body.RequestId || body.Model?.RequestId || '', model: body.Model || {} };
 }
 

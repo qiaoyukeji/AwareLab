@@ -65,7 +65,13 @@ function startGateway() {
     calls.push({ action, query: Object.fromEntries(url.searchParams) });
     res.setHeader('content-type', 'application/json');
     if (action === 'SendSmsVerifyCode') {
-      res.end(JSON.stringify({ Code: 'OK', RequestId: `fake-${calls.length}`, Model: { BizId: 'fake-biz' } }));
+      // 模拟阿里云的真实校验：模板变量里出现字面量 ##code## 会被判「模板与参数不匹配」
+      const param = url.searchParams.get('TemplateParam') || '';
+      if (param.includes('##code##')) {
+        res.end(JSON.stringify({ Code: 'isv.INVALID_PARAMETERS', Message: '请检查模板内容与模板参数是否匹配' }));
+      } else {
+        res.end(JSON.stringify({ Code: 'OK', RequestId: `fake-${calls.length}`, Model: { BizId: 'fake-biz' } }));
+      }
     } else if (action === 'CheckSmsVerifyCode') {
       const verify = url.searchParams.get('VerifyCode');
       res.end(JSON.stringify({ Code: 'OK', RequestId: `fake-${calls.length}`, Model: { VerifyResult: verify === FIXED_CODE ? 'PASS' : 'NOT_PASS' } }));
@@ -169,8 +175,10 @@ async function main() {
       adminToken
     );
     check('保存短信配置成功', saved.data?.enabled === true);
-    check('配置不全时不给 warning', !saved.data?.warning, saved.data?.warning || 'no warning');
+    // 旧配置里的 {"code":"##code##"} 会被剔除并提示，避免阿里云回 isv.INVALID_PARAMETERS
+    check('模板参数里的 code 被提示忽略', /code/.test(String(saved.data?.warning || '')), saved.data?.warning || 'no warning');
     const settings1 = await api('GET', '/settings', undefined, adminToken);
+    check('模板参数归一为空对象', settings1.data.sms.template_param === '{}', settings1.data.sms.template_param);
     check('AccessKey 以掩码回显', String(settings1.data.sms.access_key_id).endsWith('******'), settings1.data.sms.access_key_id);
     check('Secret 不回传明文', settings1.data.sms.access_key_secret === '******');
     check('配置齐全后 sms_ready 为 true', settings1.data.sms_ready === true);
@@ -195,6 +203,8 @@ async function main() {
     const lastSend = gateway.calls.filter((c) => c.action === 'SendSmsVerifyCode').at(-1);
     check('网关收到 SendSmsVerifyCode', lastSend?.query.PhoneNumber === PHONE, lastSend?.query.PhoneNumber);
     check('请求带签名与版本', Boolean(lastSend?.query.Signature) && lastSend?.query.Version === '2017-05-25');
+    // code 是云端生成的，绝不能再作为模板变量发出去（这正是 isv.INVALID_PARAMETERS 的根因）
+    check('未把 code 当模板变量发送', !String(lastSend?.query.TemplateParam || '').includes('code'), lastSend?.query.TemplateParam || '(空)');
     const throttled = await api('POST', '/auth/sms/send', { ticket: bindTicket, phone: PHONE }, undefined, null);
     check('重发被限流', throttled.json.code === 429, throttled.json.message);
 
