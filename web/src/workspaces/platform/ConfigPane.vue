@@ -110,13 +110,37 @@
         <el-switch v-model="sms.enabled" active-text="启用短信认证" />
       </template>
 
-      <el-form label-position="top" class="sms-form">
+      <el-alert
+        v-if="sms.enabled && !smsReady"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="sms-alert"
+        title="短信认证还没法启用"
+        :description="smsReadyReason || 'AccessKey、签名或模板没配齐，普通用户当前仍按口令登录。'"
+      />
+
+      <el-form label-position="top" class="sms-form" autocomplete="off">
         <div class="sms-grid">
           <el-form-item label="AccessKey ID">
-            <el-input v-model="sms.access_key_id" placeholder="LTAI 开头的 AccessKey ID" />
+            <el-input
+              v-model="sms.access_key_id"
+              name="alab-sms-key-id"
+              autocomplete="off"
+              placeholder="LTAI 开头的 AccessKey ID"
+            />
+            <p class="lab-hint is-mute">从 RAM 控制台复制，形如 <code>LTAI5t…</code>；不要填本平台的登录账号。</p>
           </el-form-item>
           <el-form-item label="AccessKey Secret">
-            <el-input v-model="sms.access_key_secret" type="password" show-password placeholder="留空表示沿用已保存的密钥" />
+            <el-input
+              v-model="sms.access_key_secret"
+              name="alab-sms-key-secret"
+              autocomplete="new-password"
+              type="password"
+              show-password
+              placeholder="留空表示沿用已保存的密钥"
+            />
+            <p class="lab-hint is-mute">30 位密钥，不是后台口令；浏览器提示保存密码时请选“从不”。</p>
           </el-form-item>
           <el-form-item label="短信签名">
             <el-input v-model="sms.sign_name" placeholder="控制台审核通过的签名，如：远山科技" />
@@ -519,6 +543,9 @@ const sms = reactive({
   endpoint: 'dypnsapi.aliyuncs.com',
   scheme_name: '',
 });
+// 短信认证的「能不能真发」由后端判定（缺字段、AK 格式不对、Secret 太短都算没配好），这里只负责显示
+const smsReady = ref(true);
+const smsReadyReason = ref('');
 // config.yaml 的只读回显值（panel_path / panel_port / capture_port_range / mail_default_dry_run / db_*）
 const info = ref({});
 // 正在保存哪一节（'ai' | 'push' | ''）：只用来把对应那颗按钮压成 loading，另一节不受影响
@@ -547,6 +574,9 @@ async function load() {
   Object.assign(push, { enabled: !!data.push?.enabled, channels: data.push?.channels || [], redact: data.push?.redact !== false });
   // 短信配置整包回填：密钥是掩码串，显示出来即可，保存时后端按「带星号 = 不改」处理
   if (data.sms) Object.assign(sms, data.sms);
+  // sms_ready 由后端按「缺字段 / AK 格式 / Secret 长度」判定，这里连同原因一起收下，直接显示在开关下方
+  smsReady.value = data.sms_ready !== false;
+  smsReadyReason.value = data.sms_ready_reason || '';
   // 整包留一份原始响应：config.yaml 的只读值都在这一层，页面只读展示
   info.value = data;
 }
@@ -632,6 +662,8 @@ async function save(key) {
     // 短信保存后会回整包掩码配置：回填一次，让刚填的明文密钥立刻变回星号
     if (key === 'sms') {
       Object.assign(sms, data);
+      // 保存响应只有掩码配置，ready 要重新问一次后端（AK 格式、Secret 长度都由它判）
+      await load();
       if (data.warning) ElMessage.warning(data.warning);
       else ElMessage.success(sms.enabled ? '已保存，短信认证已开启' : '已保存');
     } else {
@@ -938,6 +970,7 @@ onMounted(() => {
   gap: 0 16px;
 }
 .sms-grid :deep(.el-input-number) { width: 100%; }
+.sms-alert { margin-bottom: 12px; }
 .sms-adv { margin-top: 4px; border-top: 1px dashed var(--lab-line-2); border-bottom: none; }
 .sms-adv :deep(.el-collapse-item__header) { font-size: 12.5px; color: var(--lab-ink-3); background: transparent; }
 .sms-adv :deep(.el-collapse-item__wrap) { background: transparent; }

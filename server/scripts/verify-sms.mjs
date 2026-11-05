@@ -164,7 +164,7 @@ async function main() {
         value: {
           enabled: true,
           access_key_id: 'LTAI5tFakeKeyId0001',
-          access_key_secret: 'fake-secret-value',
+          access_key_secret: 'unitTestSecret0123456789abcdefgh',
           sign_name: '远山科技',
           template_code: '100001',
           template_param: '{"code":"123456","min":"5"}',
@@ -206,6 +206,11 @@ async function main() {
     const lastSend = gateway.calls.filter((c) => c.action === 'SendSmsVerifyCode').at(-1);
     check('未传 phone 时沿用管理员登记号码', lastSend?.query.PhoneNumber === PHONE, lastSend?.query.PhoneNumber);
     check('请求带签名与版本', Boolean(lastSend?.query.Signature) && lastSend?.query.Version === '2017-05-25');
+  check(
+    '报文字段没有 undefined 占位',
+    Object.values(lastSend?.query || {}).every((value) => value !== 'undefined'),
+    JSON.stringify(Object.entries(lastSend?.query || {}).filter(([, value]) => value === 'undefined'))
+  );
     // TemplateParam 是必填项：不传会回 MissingTemplateParam；code 必须是 ##code## 占位，云端才生成并认这个码
     check(
       'TemplateParam 必填且带 ##code## 占位',
@@ -261,6 +266,10 @@ async function main() {
 
     // 13) 校验留痕：发码确实打到了网关（同号限流挡住的那次不该重复打到）
     check('发码请求落到网关', gateway.calls.filter((c) => c.action === 'SendSmsVerifyCode').length === 1);
+    check(
+      '所有请求都没有 undefined 占位（含验码）',
+      gateway.calls.every((call) => Object.values(call.query).every((value) => value !== 'undefined'))
+    );
 
     console.log(`\n共 ${failures === 0 ? '全部' : failures} 项断言${failures === 0 ? '通过' : '失败'}`);
     if (failures > 0) process.exitCode = 1;

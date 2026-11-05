@@ -4,6 +4,15 @@
 [语义化版本](https://semver.org/lang/zh-CN/)。版本号以 `server/package.json` 与
 `web/package.json` 的 `version` 为准，两者始终保持一致。
 
+## [1.5.3] - 2026-11-06
+
+### 修复
+
+- **校验验证码不再发送 `SchemeName=undefined`**：没配方案名时，`CheckSmsVerifyCode` 的请求里仍带着
+  字面量 `undefined`，云端把它当成一个不存在的方案，验证码明明没错也回「验证失败」。`callRpc`
+  现在统一剔除 `undefined` / `null` / 空串后再签名，回归脚本加了「所有请求都没有 undefined 占位」断言。
+- 保存短信配置后会重新读取一次 `/settings`，开关下面的未就绪原因（AK 格式、Secret 长度）立即刷新。
+
 ## [1.5.2] - 2026-11-06
 
 ### 修复

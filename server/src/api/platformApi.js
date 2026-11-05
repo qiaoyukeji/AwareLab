@@ -128,6 +128,8 @@ platformApi.get('/settings', requireAdmin, (_req, res) => {
     ai: maskSecrets(getSetting('ai', AI_DEFAULT)),
     sms: maskedSmsConfig(),
     sms_ready: !smsReadyProblem(sms),
+    // 把「为什么还不能启用」原样带给界面：最常见是 AccessKey 被浏览器自动填成了后台登录账号
+    sms_ready_reason: smsReadyProblem(sms) || '',
     capture_port_range: config.capture.port_range,
     mail_default_dry_run: config.mail.default_dry_run,
     require_authorization: config.exercise.require_authorization,

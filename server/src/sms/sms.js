@@ -122,6 +122,13 @@ export function smsReadyProblem(cfg = smsConfig()) {
   if (!cfg.access_key_secret) return '未填写 AccessKey Secret';
   if (!cfg.sign_name) return '未填写短信签名';
   if (!cfg.template_code) return '未填写模板 Code';
+  // 最常见的错：浏览器把后台登录账号/口令自动填进了这两个框，发码时报 InvalidAccessKeyId.NotFound
+  if (!/^LTAI[A-Za-z0-9]{8,24}$/.test(cfg.access_key_id)) {
+    return 'AccessKey ID 格式不对：应以 LTAI 开头，别把本平台登录账号填进来';
+  }
+  if (String(cfg.access_key_secret).length < 20) {
+    return 'AccessKey Secret 长度不对：应是控制台生成的 30 位密钥，不是登录口令';
+  }
   return null;
 }
 
@@ -166,6 +173,11 @@ function endpointUrl(endpoint) {
 
 /** 统一发一次 RPC：拼公共参数 → 签名 → fetch → 解析 JSON，网络错误与业务错误都收敛成中文 Error。 */
 async function callRpc(action, bizParams, cfg) {
+  // 先把 undefined / null / 空串剔掉：签名串里出现 SchemeName=undefined 这种值，
+  // 云端会当成一个叫 "undefined" 的方案，校验验证码时自然对不上
+  const clean = Object.fromEntries(
+    Object.entries(bizParams || {}).filter(([, value]) => value !== undefined && value !== null && value !== '')
+  );
   const params = {
     Action: action,
     Version: '2017-05-25',
@@ -175,7 +187,7 @@ async function callRpc(action, bizParams, cfg) {
     SignatureNonce: crypto.randomUUID(),
     Timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
     AccessKeyId: cfg.access_key_id,
-    ...bizParams,
+    ...clean,
   };
   const query = signV1(params, cfg.access_key_secret);
   const url = endpointUrl(cfg.endpoint);
