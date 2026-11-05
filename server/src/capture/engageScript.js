@@ -1,3 +1,9 @@
+/**
+ * 采集运行时的拼装层：配置块和上报脚本两件东西注入访客页面。
+ * 端点、配置块 id、Cookie 名、事件名都是冻结协议；RUNTIME 用 String.raw 包住、ES5 写法，
+ * 正文原样发到访客浏览器，注释只写在外层，动正文等于动协议。
+ * boot 块要落在模板自带脚本之后、</body> 之前，否则页面的 onsubmit 先绑定，采集反而采不到。
+ */
 export const ENGAGE_BASE = '/alab/v2';
 
 /** 上报端点：boot 块里的 endpoint 固定写它，运行时据此反推信标根路径 */
@@ -6,20 +12,21 @@ export const ENGAGE_ENDPOINT = `${ENGAGE_BASE}/engage`;
 /** 警示学习页端点 */
 export const LESSON_ENDPOINT = `${ENGAGE_BASE}/lesson`;
 
+/** 运行时只按这个 id 找参数，端到端断言也指着它，改名即破坏协议兼容。 */
 export const BOOT_ELEMENT_ID = 'alab-boot';
 
 /**
- * 响应动作在库里存历史值 learn（模板表列语义不变），协议里统一叫 lesson。
- * 只在拼装 boot 块时翻译一次，其余环节都只认协议值。
+ * 库值 learn 在这里翻译成协议值 lesson，只翻这一次，其余环节只认协议值。
+ * 空值兜成 alert：少了这道兜底，没设响应动作的模板提交后页面点了没反应。
  */
 export function bootAfter(responseType) {
   return responseType === 'learn' ? 'lesson' : responseType || 'alert';
 }
 
 /**
- * 采集运行时的两个部件：
- *  - 配置块用 JSON 承载，浏览器不会执行它，页面上的其它脚本也拿不到全局命名空间
- *  - 运行脚本只从配置块读取参数，模板作者不需要再手写任何上报代码
+ * 配置块用 JSON 承载，浏览器不会执行它，页面上的其它脚本也拿不到全局命名空间。
+ * 每个字段都给缺省值：boot 块里出现字面量 undefined 会直接在访客页面上报出怪值。
+ * JSON 里的 < 转义成 \\u003c，否则模板正文含 </script> 时提前闭合配置块，把注入脚本变成可见文本。
  */
 export function buildBootBlock(cfg) {
   const payload = {
@@ -34,6 +41,7 @@ export function buildBootBlock(cfg) {
   return `<script type="application/alab+json" id="${BOOT_ELEMENT_ID}">${json}</script>`;
 }
 
+// String.raw 保住正文里的正则与反斜杠，别改成普通模板字符串；正文一个字符都不能多，它会原样发到访客浏览器。
 const RUNTIME = String.raw`
 (function () {
   var cfg = {};
@@ -186,11 +194,14 @@ const RUNTIME = String.raw`
 })();
 `;
 
+/** 把运行时包成 <script> 标签，注入位置由 pageCompiler 决定。 */
 export function buildEngageScript() {
   return `<script>${RUNTIME}</script>`;
 }
 
-/** 采集页要注入的完整片段：配置块 + 运行时，二者都必须落在业务脚本之后 */
+/**
+ * 完整注入片段，配置块在前、运行时在后：运行时启动时就读 #alab-boot，顺序反了就取不到参数。
+ */
 export function buildEngage(cfg) {
   return buildBootBlock(cfg) + buildEngageScript();
 }

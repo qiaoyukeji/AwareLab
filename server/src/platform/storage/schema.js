@@ -1,8 +1,20 @@
 /**
- * 表结构与版本迁移。
- *
- * user_version 记录库结构演进到的版本号，迁移按版本递增逐级执行；
- * 建表语句一律 IF NOT EXISTS，保证对历史遗留库（user_version=0 但表已在）幂等。
+ * 表结构与版本迁移：user_version 记录演进到的版本，迁移逐级执行；建表一律 IF NOT EXISTS，
+ * 对历史库（user_version=0 但表已在）幂等。加表加列只走下面的 MIGRATIONS，别处写 ALTER 都是野路子。
+ */
+/**
+ * v1 基线：一次 exec 建齐全部业务表。建表串里不能写注释（-- 会被 SQLite 吃掉后续语句，且既有文本已冻结），
+ * 所以不显然的列口径记在这里，这是唯一的列文档，改列时同步。
+ * authorizations：allowed_hosts 存文本、读侧还原成数组，匹配口径与门禁共用 hostMatches()；
+ *   start_at/end_at 存 ISO，不可解析要判无效而不是永久有效；status 只是登记态，能不能用现算（security/mandate.js）。
+ * web_sites.status 是运维意图不是进程实况（真实在听问 siteRegistry.isRunning()）；
+ *   listen_ip 默认 0.0.0.0=全网卡，收成 127.0.0.1 才本机专用；tls_key 是私钥只进库，不进响应与审计；
+ *   close_reason（v4）：authorization=强制下线可续期复服，manual=主动收网不许掀开。
+ * smtp_profiles.pass 明文入库（本机 data 目录可信）但所有出口掩码；mail_tasks 的 dry_run=1 沙箱、0 真发信，翻转留审计。
+ * mail_recipients 的 sandboxed 与 sent 分开（落盘与真寄出是两件事）；opened_at/clicked_at/submitted_at 由信标面回写且只记首次。
+ * records.kind 只有 web/mail，证据页分组与导出筛选都以它为准；form_json 含明文凭据，只进库绝不复制到响应/审计/推送。
+ * sessions.expires_at 是全库唯一 INTEGER 毫秒时间列，其余存 ISO 文本。
+ * push_logs.request 落库前已掩码机器人令牌，可原样给前端展示，与 audit_logs（记操作员动作）分职。
  */
 const BASELINE = `
 CREATE TABLE IF NOT EXISTS authorizations (
@@ -183,21 +195,25 @@ CREATE TABLE IF NOT EXISTS push_logs (
 `;
 
 /**
- * 采集协议 v2 的诊断结论需要留在模板行上，列表页才能不逐条重新体检。
- * 只对 web_templates 追加一个可空列，既有列名与语义都不动；
- * 老库可能已经带着这一列（重复执行 ALTER 会报错），所以先查表结构再决定是否执行。
+ * 给 web_templates 追加诊断留痕列 diagnose_json，列表页据此显示体检结论、不逐条重检。
+ * 只加一个可空列，既有列不动；老库可能已带列，先查表结构再决定执行。
  */
+// ALTER 真失败就上抛，由 applySchema 冒泡到启动流程：结构没到位不该开始服务
 function addTemplateDiagnoseColumn(db) {
+  // 先查列在不在：老库可能已跑过同版本 ALTER，重复执行会抛 duplicate column 让服务起不来
   const columns = db.prepare('PRAGMA table_info(web_templates)').all();
   if (columns.some((column) => column.name === 'diagnose_json')) return;
+  // 新列可空：老行读出来按未体检显示，旧数据不必回填
   db.exec('ALTER TABLE web_templates ADD COLUMN diagnose_json TEXT');
 }
 
 /**
- * 操作审计：平台一直记得住员工哪一次上了钩，却记不下操作员自己动过什么。
- * 授权方追问「谁在什么时候把沙箱关掉真发了邮件、谁导走了哪批证据」时，
- * 这张表是唯一的自证材料，因此只增不改不删，与 push_logs（外发通知日志）分职。
+ * 操作审计表：记操作员动过什么（与记外发的 push_logs 分职），是授权方追责时唯一的自证材料，只增不删。
  */
+// v3 迁移：操作审计表。列口径：actor 可为 NULL（无请求上下文的动作也留痕，故意不写 "system" 是为了
+//   区分人点的和不是人点的）；action 用 名词.动词 小写，改名要同步前端字典；detail 是差异快照 JSON，
+//   写侧截到 4000 字符、截断后非法 JSON 读侧要容错；ip 是 clientIp 结果受 trust_proxy 影响。
+// 本表只 INSERT，全仓无 UPDATE/DELETE；detail 里不许出现口令、SMTP 密码、机器人密钥、完整令牌。
 const AUDIT = `
 CREATE TABLE IF NOT EXISTS audit_logs (
   id TEXT PRIMARY KEY,
@@ -213,23 +229,96 @@ CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs (created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs (action, created_at);
 `;
 
+/**
+ * 给 web_sites 加 close_reason，分清主动收网与授权出窗口强制下线；只有后者续期能自动复服。
+ * 老库可能已带列，先查表结构再决定执行。
+ */
+// 取值口径：authorization=平台强制下线（续期后 siteRegistry.reopenSitesOfAuthorization 自动复服）、
+//   manual=操作员主动收网（谁续期都不许掀开）、NULL=从未因此下线或开站时清回 NULL
+function addSiteCloseReasonColumn(db) {
+  // 先查列在不在：旧库可能已跑过一次，重复 ALTER 会让服务起不来
+  const columns = db.prepare('PRAGMA table_info(web_sites)').all();
+  if (columns.some((column) => column.name === 'close_reason')) return;
+  // 只 ALTER 不 UPDATE 老行：把已 closed 的猜成 manual/authorization 会改变既有数据语义；老行留 NULL 即原因未知，宁可不复服
+  db.exec('ALTER TABLE web_sites ADD COLUMN close_reason TEXT');
+}
+
+/**
+ * 给 sessions 补 ip / user_agent 两列，记录会话来源、改口令时判断吊销哪些；都是可空文本，历史行为 NULL。
+ */
+function addSessionTraceColumns(db) {
+  const columns = db.prepare('PRAGMA table_info(sessions)').all();
+  const missing = (name) => !columns.some((column) => column.name === name);
+  // 两列分开判定：只加成功一列的库不该被第二条 ALTER 撞死
+  if (missing('ip')) db.exec('ALTER TABLE sessions ADD COLUMN ip TEXT');
+  if (missing('user_agent')) db.exec('ALTER TABLE sessions ADD COLUMN user_agent TEXT');
+}
+
+/**
+ * 登录失败计数落库：内存计数重启即清零会给撞库留重启窗口。按来源 IP 一行，登录成功归零。
+ */
+// 列口径：client_ip 主键，取 clientIp() 与 session.js 限流键同源；fails 连续失败数，登录成功即 DELETE 该行
+//   （不留曾经失败的污点计数）；window_started_at 本轮起点，窗口滑过按过期重算；last_at 最后一次失败。
+// 本表只存 IP 与计数，绝不存尝试过的用户名或口令。
+const LOGIN_FAILURES = `
+CREATE TABLE IF NOT EXISTS login_failures (
+  client_ip TEXT PRIMARY KEY,
+  fails INTEGER NOT NULL,
+  window_started_at TEXT,
+  last_at TEXT
+);
+`;
+
+/**
+ * 给 records 加 disposition（new/contacted/educated/closed），note 答不出是不是都教育过了。
+ * 新列可空，历史行留 NULL 由读侧显示未处置；不回填是刻意的，把老记录猜成 new 会凭空造出教育覆盖率分母。
+ */
+function addRecordDispositionColumn(db) {
+  const columns = db.prepare('PRAGMA table_info(records)').all();
+  // 加列与建索引分开判定：只加过列、没建过索引的库也要被这次迁移补齐
+  if (!columns.some((column) => column.name === 'disposition')) {
+    db.exec('ALTER TABLE records ADD COLUMN disposition TEXT');
+  }
+  // 覆盖率是按处置状态数人数的查询，随演练规模线性变慢；建索引换界面一次点击
+  db.exec('CREATE INDEX IF NOT EXISTS idx_records_disposition ON records (disposition)');
+}
+
+// 迁移清单：数组顺序即执行顺序，version 严格递增且永不改历史条目。up 是字符串就直接 exec，是函数就先查表结构（加列专用）。
+// 加迁移只在尾部 push version=上一项+1；改已发布条目的 SQL 会让老库错位。
 const MIGRATIONS = [
+  // v1：一次 exec 建齐全部表；user_version=0 但表已在的历史库靠 IF NOT EXISTS 同样安全
   { version: 1, label: '基线表结构', up: BASELINE },
+  // v2：给 web_templates 加诊断留痕列，走函数先探表结构
   { version: 2, label: '模板诊断留痕', up: addTemplateDiagnoseColumn },
+  // v3：操作审计表，追责时唯一自证材料，只 INSERT
   { version: 3, label: '操作审计表', up: AUDIT },
+  // v4：给 web_sites 加 close_reason，分清强制下线与主动收网，续期复服只认前者
+  { version: 4, label: '站点下线原因', up: addSiteCloseReasonColumn },
+  // v5：sessions 补来源两列，登录失败计数落 DB（内存计数重启即清零，给撞库留重启窗口）
+  { version: 5, label: '会话来源与登录失败落库', up: (db) => { addSessionTraceColumns(db); db.exec(LOGIN_FAILURES); } },
+  // v6：records 加 disposition，历史行留 NULL=未处置
+  { version: 6, label: '上钩记录处置状态', up: addRecordDispositionColumn },
 ];
 
+// 最新结构版本 = 迁移数组最后一项，启动横幅与自检比对的就是它；别手写成常量
 const CURRENT_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;
 
+/**
+ * 读出库当前演进到第几级（user_version），读不到给 0 让 applySchema 从 v1 建起。
+ * 只反映跑到第几级，不反映表是否真存在；手工乱改会让迁移跳步或重跑。
+ */
 export function schemaVersion(db) {
   const row = db.prepare('PRAGMA user_version').get();
   return Number(row?.user_version ?? 0);
 }
 
 /** 逐级补齐落后于当前代码的库结构，已到位的版本直接跳过 */
+// 返回 from/to，from===to 表示这次没动结构；每级执行会打一行 [storage] 表结构迁移至 vN
+// 任何一级 SQL 抛错就原样上抛让启动终止：结构半到位比起不来更危险
 export function applySchema(db) {
   const from = schemaVersion(db);
   for (const step of MIGRATIONS) {
+    // 已跑过的级别跳过，所以每次启动调 applySchema 不会重复建表/加列
     if (step.version <= from) continue;
     if (typeof step.up === 'function') step.up(db);
     else db.exec(step.up);
