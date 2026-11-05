@@ -1,12 +1,6 @@
 /**
- * 自测装配器：在隔离目录里起一个完整的服务，再跑 e2e 断言。
- *
- * 隔离是硬性要求——e2e 会真实建站监听、真实投递沙箱邮件、真实吊销授权，
- * 这些动作绝不能落在 server/data 里的演练数据上。
- *
- * 用法：
- *   node scripts/selftest.mjs                                  # 空库跑全流程
- *   E2E_SEED=../data/awarelab.db node scripts/selftest.mjs    # 用生产库只读副本跑（含迁移路径）
+ * 在 .selftest 隔离目录起服务再跑 e2e；e2e 会真实建站投递、真实吊销授权，绝不碰 server/data 的演练数据。
+ * 用法：node scripts/selftest.mjs；E2E_SEED=data/awarelab.db 用生产库副本跑迁移回归。
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -32,7 +26,14 @@ function writeConfig() {
   fs.writeFileSync(
     CONFIG_FILE,
     yaml.dump({
-      panel: { path: crypto.randomBytes(16).toString('hex'), port: PANEL_PORT, username: randomString(8), password: panelPassword },
+      // password_updated_at 缺失即被建站闸门判为出厂口令未改，POST /web-sites 一律 409，隔离回归跑不下去
+      panel: {
+        path: crypto.randomBytes(16).toString('hex'),
+        port: PANEL_PORT,
+        username: randomString(8),
+        password: panelPassword,
+        password_updated_at: new Date().toISOString(),
+      },
       capture: { port_range: [8000, 9999], bind_host: '127.0.0.1' },
       mail: { default_dry_run: true, default_send_interval_ms: 120 },
       exercise: { require_authorization: true },
@@ -87,7 +88,7 @@ function startServer() {
     env: { ...process.env, AWARELAB_CONFIG: CONFIG_FILE, AWARELAB_DATA: DATA_DIR },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
-  // 照常回显（服务提前退出时要靠这段日志定位），同时留一份给输出泄露断言
+  // 回显的同时留一份给输出泄露断言
   const tee = (stream) => stream.on('data', (buf) => { done.log += buf.toString(); process.stdout.write(buf); });
   tee(child.stdout);
   tee(child.stderr);
@@ -98,7 +99,7 @@ function startServer() {
   return { child, done };
 }
 
-/** 启动横幅泄露口令 = 演练口令被复制进 journald / nohup.out / 容器日志，属于硬性失败 */
+/** 启动横幅带明文口令会一并进 journald / nohup.out / 容器日志 */
 function assertBannerSafe(log, panelPassword) {
   if (log.includes(panelPassword)) throw new Error('启动输出泄露了明文口令');
   if (!log.includes('密码: 见 config.yaml')) throw new Error('启动输出缺少「密码: 见 config.yaml」指引，横幅口径已变');
@@ -135,6 +136,7 @@ try {
   process.exit(code ?? 1);
 } catch (err) {
   console.error(`[selftest] ${err.message}`);
-  if (child) close(child.pid);
+  // 收尾走 await stop(child)：child.kill 不等待，进程还占着 4111/8123 时下一次只会撞端口
+  if (child) await stop(child);
   process.exit(1);
 }

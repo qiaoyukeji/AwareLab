@@ -1,7 +1,6 @@
 /**
- * 实机自检：对着已经在跑的服务做**只读**体检——不建站点、不发信、不写库。
- * 完整闭环（建站、采集、发送、吊销）由 npm test 在隔离副本上验证，见 selftest.mjs。
- * 用法：先启动服务，再执行 node scripts/smoke.mjs
+ * 只读体检：对着已经在跑的服务发只读请求，不建站点、不发信、不写库。完整闭环在 selftest.mjs。
+ * 用法：先起服务，再 node scripts/smoke.mjs
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -39,11 +38,11 @@ async function api(p, opts, token) {
   return { status: res.status, json };
 }
 
-/** 列表接口有两种返回（数组 / {rows,total}），统一成条数；拿不到条数返回 null */
+/** 列表接口两种返回（数组 / {rows,total}），统一成条数 */
 const countOf = (data) =>
   Array.isArray(data) ? data.length : Array.isArray(data && data.rows) ? (data.total != null ? data.total : data.rows.length) : null;
 
-/** 用原始 http 请求打钓鱼网站：fetch 不允许覆盖 Host 头 */
+/** 用原始 http 打钓鱼网站：fetch 不允许覆盖 Host 头 */
 function probeCapture(port, hostHeader) {
   return new Promise((resolve) => {
     const req = http.request({ host: '127.0.0.1', port, path: '/', headers: { Host: hostHeader } }, (res) => {
@@ -56,7 +55,6 @@ function probeCapture(port, hostHeader) {
   });
 }
 
-// 1. 服务在线：根路径跳转到随机后台入口
 const root = await fetch(BASE + '/', { redirect: 'manual' });
 ok(
   '根路径跳转管理面入口',
@@ -64,17 +62,15 @@ ok(
   root.status + ' ' + root.headers.get('location')
 );
 
-// 2. 信标面自检
 const healthRes = await fetch(BASE + '/alab/health');
 ok('信标面自检 /alab/health', healthRes.status === 200 && (await healthRes.text()) === 'ok');
 
-// 3. 废弃约定端点必须已下线：留着等于对外多暴露一个可枚举的公开入口
+// 废弃端点必须已下线：多一个可枚举的公开入口就多一分暴露面
 for (const legacy of ['/status', '/beacon/open.gif', '/api/mail_login']) {
   const dead = await fetch(BASE + legacy);
   ok('废弃约定端点不再服务 ' + legacy, dead.status === 404, String(dead.status));
 }
 
-// 4. 登录与会话头鉴权
 const login = await api('/auth/login', {
   method: 'POST',
   body: JSON.stringify({ username: cfg.panel.username, password: cfg.panel.password }),
@@ -94,7 +90,6 @@ ok('会话头鉴权可用', me.status === 200 && me.json.data.username === cfg.p
 const badToken = await api('/auth/me', {}, 'not-a-real-token');
 ok('无效令牌被拒(401)', badToken.status === 401, String(badToken.status));
 
-// 5. 只读列表接口
 const LISTINGS = [
   ['演练授权', '/authorizations'],
   ['钓鱼网站', '/web-sites'],
@@ -111,7 +106,7 @@ for (const item of LISTINGS) {
   ok(item[0] + '列表可读', res.status === 200 && res.json.code === 0 && count !== null, res.status + ' ' + count);
 }
 
-// 发信口令只以掩码出网：列表回明文，凭据就进了浏览器内存与网络面板
+// 发信口令只以掩码出网，列表回明文会把凭据带进浏览器与网络面板
 const profileRows = ((await api('/smtp-profiles', {}, token)).json.data || {}).rows || [];
 if (profileRows.length) {
   ok('发信邮箱口令掩码回显', profileRows.every((p) => p.pass === '******'), profileRows.length + ' 个账号');
@@ -119,7 +114,6 @@ if (profileRows.length) {
   skip('发信邮箱口令掩码回显', '尚未登记发信邮箱');
 }
 
-// 6. 平台运行参数
 const settings = (await api('/settings', {}, token)).json.data || {};
 ok(
   '运行参数读取正确',
@@ -132,7 +126,6 @@ ok(
 ok('邮件默认沙箱发送', settings.mail_default_dry_run === true, String(settings.mail_default_dry_run));
 ok('授权硬性要求开启', settings.require_authorization === true, String(settings.require_authorization));
 
-// 7. 统计口径：监听端口必须全落在配置区间内
 const home = (await api('/stats/home', {}, token)).json.data || {};
 ok(
   '统计接口形状完整',
@@ -147,14 +140,16 @@ ok(
   ports.length ? ports.join(',') : '当前无监听；区间 ' + PORT_RANGE.join('-')
 );
 
-// 8. 钓鱼网站的域名准入（只读探测，不改变站点状态）
 const openSites = (home.site_overview || []).filter((x) => x.status === 'open');
 if (openSites.length) {
   for (const site of openSites) {
     const denied = await probeCapture(site.port, 'not-allowed.example.org');
     ok(
-      '站点 :' + site.port + ' 拒绝授权名单外的域名',
-      denied.status === 404 && denied.body.indexOf('授权名单') >= 0,
+      '站点 :' + site.port + ' 拒绝授权名单外的域名且不泄露内部词',
+      denied.status === 404 &&
+        /页面不存在|无法访问/.test(denied.body) &&
+        !/授权|演练|采集/.test(denied.body) &&
+        denied.body.indexOf('alab-boot') < 0,
       denied.status + ' ' + denied.body.slice(0, 40)
     );
   }
@@ -162,7 +157,7 @@ if (openSites.length) {
   skip('钓鱼网站域名准入', '当前没有开启中的钓鱼网站');
 }
 
-// 9. 播报授权状态：没有生效授权时建站与发送会被拒绝，这是授权预期而不是故障
+// 无生效授权时建站与发送会被拒，属预期
 const authRows = (await api('/authorizations', {}, token)).json.data || [];
 const live = authRows.find((a) => a.effective === 'active');
 if (live) {

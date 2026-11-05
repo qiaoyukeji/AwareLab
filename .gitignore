@@ -19,6 +19,20 @@ server/data/
 server/.selftest/
 # 人工走查用的隔离副本（同上，含配置与演练数据，绝不进仓库）
 server/.functional/
+# QA 用例套件的隔离副本（同上，含配置、演练数据与沙箱邮件）
+server/.qa/
+# 一次性验证用的临时副本：任何以 .qa- 开头的目录都按「含演练数据的副本」处理
+server/.qa-*/
+# 库文件快照（含凭据）：任何位置的 .db/.sqlite/.wal 都不许进仓库，
+# 这条兜底是给「备份/清理/迁移脚本意外落盘」留的——真数据在 server/data/ 已被上面覆盖
+*.db
+*.sqlite
+*.db-wal
+*.db-shm
+# purge/备份脚本的落盘目录
+server/data/backup/
 
 # 历史基线快照（仅本地，不进仓库）
 .baseline-pre-refactor/
+# 本机编辑器/终端在工作区根生成的缓存目录（Windows 环境变量未展开时留下的痕迹，非项目内容）
+%SystemDrive%/
