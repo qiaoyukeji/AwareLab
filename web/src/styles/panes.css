@@ -1,8 +1,13 @@
-/* AwareLab 版式与组件观感：顶栏阶段导航 + 工作区面板，全局类，视图直接用 */
+/* AwareLab 版式与组件观感层（全局 .lab-* 类），main.js 里紧跟 tokens.css 之后 import；同特异性下后加载者赢，
+ * 所以覆盖 Element Plus 的那一段必须待在这里而不是令牌层。颜色优先取 tokens.css 的令牌，
+ * 文件里剩下的写死值只有两类：soft 底再深一档的描边色，和深底专用的文字色（不许挪到白底元素上）。
+ * 选择器全是裸类名，几十个视图共用，改名或调 padding 会一次影响整站；只给单个面板用的样式请写进那个 .vue 的 <style scoped>。
+ * 随机路径、口令这类值不许出现在这里，也不进构建产物。 */
 
-/* ── 外壳 ─────────────────────────────────────────────── */
+/* 竖排 flex：顶栏定高 → 授权提示条（有才出现）→ .lab-main 吃掉剩余高度并自己滚。滚动条生在 .lab-main 上，顶栏天然不动，不需要 sticky。height:100% 依赖 tokens.css 里 html/body/#app 的三连撑。 */
 .lab-shell { display: flex; flex-direction: column; height: 100%; }
 
+/* 高度只由 --lab-top-h 决定，改高度改令牌不改这里的 padding。z-index 在 flex item 上直接生效，20 只用来压页面内浮层，Element Plus 弹窗/抽屉自带 2000 起的层级，不受这里影响。 */
 .lab-top {
   height: var(--lab-top-h);
   flex: 0 0 auto;
@@ -15,6 +20,7 @@
   z-index: 20;
 }
 .lab-brand { display: flex; align-items: center; gap: 9px; flex: 0 0 auto; }
+/* 图标本体是 ui/BrandMark.vue 那张 SVG，靠 viewBox 缩放，显示尺寸在这里定；描边粗细属图形坐标系，缩得越小边越细，改尺寸要连着看 */
 .lab-brand-mark {
   width: 26px; height: 26px;
   flex: 0 0 auto;
@@ -22,10 +28,13 @@
   border-radius: var(--lab-r);
 }
 .lab-brand-txt b { font-size: 14px; font-weight: 700; color: #fff; display: block; line-height: 1.15; }
+/* 副标语在 1180px 断点下整条隐藏 */
 .lab-brand-txt small { font-size: 11px; color: #8f9dab; display: block; }
 
+/* 窗口窄时靠 overflow-x:auto 横滚；两套隐藏滚动条的写法都要留，scrollbar-width:none 管 Firefox，::-webkit-scrollbar 管 Chromium，只写一个会露出一条杠 */
 .lab-stages { display: flex; align-items: center; gap: 2px; overflow-x: auto; scrollbar-width: none; }
 .lab-stages::-webkit-scrollbar { display: none; }
+/* 阶段是 router-link，text-decoration:none 必须写在这里；white-space:nowrap 防标签被压成两行把顶栏顶高 */
 .lab-stage {
   display: flex; align-items: center; gap: 6px;
   padding: 6px 11px;
@@ -34,10 +43,14 @@
   transition: background .15s, color .15s;
 }
 .lab-stage:hover { background: rgba(255, 255, 255, .07); color: #fff; }
+/* 白字压在 --lab-accent 上约 5.5:1，AA 达标，所以选中态敢用白字 */
 .lab-stage.is-on { background: var(--lab-accent); color: #fff; font-weight: 600; }
+/* tabular-nums 保证 06→07 切换时序号宽度不跳 */
 .lab-stage-no { font-size: 11px; opacity: .6; font-variant-numeric: tabular-nums; }
 
+/* margin-left:auto 是唯一把它推到最右的手段（阶段导航不定宽） */
 .lab-top-side { margin-left: auto; display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+/* 深底上的描边按钮用半透明白描边，--lab-line 是浅底用的线，放深底上等于看不见；既能当 button 也能当 router-link，cursor 与 text-decoration 都显式写 */
 .lab-top-btn {
   display: inline-flex; align-items: center; gap: 5px;
   padding: 5px 9px; border-radius: var(--lab-r);
@@ -46,7 +59,7 @@
 }
 .lab-top-btn:hover { border-color: rgba(255, 255, 255, .4); color: #fff; }
 
-/* ── 授权提示条 ───────────────────────────────────────── */
+/* AppShell 在没有生效授权时插入的横幅。颜色只负责醒目，能不能建站/发信由服务端 mandate.js 判定，删掉或改灰这条都拦不住任何动作。 */
 .lab-gate {
   display: flex; align-items: center; gap: 10px;
   padding: 8px 18px;
@@ -55,19 +68,24 @@
   color: var(--lab-warn); font-size: 12.5px;
 }
 .lab-gate b { font-weight: 700; }
+/* 条内链接显式改警示色：全局 a 是主色（见 tokens.css），混在警示底上会被读成正常状态 */
 .lab-gate a { color: var(--lab-warn); text-decoration: underline; }
 .lab-gate.is-danger { background: var(--lab-danger-soft); border-color: #f0ccd1; color: var(--lab-danger); }
 
-/* ── 页面骨架 ─────────────────────────────────────────── */
+/* 全站唯一的滚动容器（overflow-y:auto 在这里，不在 body），顶栏与授权条因此天然不动 */
 .lab-main { flex: 1 1 auto; overflow-y: auto; }
+/* 内容限宽居中：超宽屏上表格一行扫不到尾 */
 .lab-page { max-width: var(--lab-max); margin: 0 auto; padding: 16px 18px 28px; }
+/* flex-start 而不是 center：note 折成两行时右侧按钮要贴顶，居中会让按钮飘到标题中段 */
 .lab-page-hd { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 14px; }
 .lab-page-title { font-size: 17px; font-weight: 700; margin: 0; color: var(--lab-ink); }
 .lab-page-note { font-size: 12.5px; color: var(--lab-ink-3); margin: 3px 0 0; max-width: 78ch; }
+/* 标题再长也不能把按钮挤没 */
 .lab-page-ops { margin-left: auto; display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+/* 页脚那句"仅授权范围内使用 / 数据只保留在本机"是使用边界声明，不是装饰文案 */
 .lab-foot { text-align: center; color: var(--lab-ink-4); font-size: 12px; padding: 24px 0 4px; }
 
-/* ── 面板 ─────────────────────────────────────────────── */
+/* margin-bottom 用 --lab-gap，与 lab-grid 的 gap 同值，两列面板上下错位时缝隙才一样宽 */
 .lab-pane { background: var(--lab-surface); border: 1px solid var(--lab-line); border-radius: var(--lab-r); margin-bottom: var(--lab-gap); }
 .lab-pane-hd {
   display: flex; align-items: center; gap: 10px;
@@ -77,15 +95,17 @@
 .lab-pane-t { font-size: 14px; font-weight: 700; color: var(--lab-ink); }
 .lab-pane-ops { margin-left: auto; display: flex; align-items: center; gap: 8px; }
 .lab-pane-bd { padding: 14px; }
+/* flush 变体用来塞 el-table / 图表：表格自带单元格边距，再套 14px 会白亏一列宽度 */
 .lab-pane--flush .lab-pane-bd { padding: 0; }
 .lab-pane-ft { padding: 10px 14px; border-top: 1px solid var(--lab-line-2); }
 
-/* ── 工作区标签 ───────────────────────────────────────── */
+/* 切页由 useTab() 写进 URL query（?tab=xxx），这条 bar 上的标签可以直接分享链接让对方复现同一屏 */
 .lab-tabs {
   display: flex; align-items: center; gap: 4px;
   margin-bottom: var(--lab-gap);
   border-bottom: 1px solid var(--lab-line);
 }
+/* 未选中态也画一圈 1px 透明边框（只把 border-bottom 归零），选中时换成实色边框才不会让标签整体长出一圈、文字跳位 */
 .lab-tab {
   position: relative;
   padding: 8px 14px;
@@ -96,29 +116,34 @@
 }
 .lab-tab:hover { color: var(--lab-accent); }
 .lab-tab.is-on { background: var(--lab-surface); border-color: var(--lab-line); color: var(--lab-ink); font-weight: 700; }
+/* 选中态下方 2px 的纸色贴片：bottom:-1px 压在 .lab-tabs 的底线上把线截断，少了它选中标签和面板之间会夹一条灰线 */
 .lab-tab.is-on::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--lab-surface); }
+/* tabular-nums 让 9→10 时标签宽度不跳 */
 .lab-tab-n { font-size: 11px; color: var(--lab-ink-4); margin-left: 5px; font-variant-numeric: tabular-nums; }
 
-/* ── 栅格与分栏 ───────────────────────────────────────── */
+/* 列数与左栏宽由调用方写在行内 style 上（style="--cols: 3" / style="--split: 520px"），全局层不用为某一面页开特例。minmax(0, 1fr) 不是冗余：grid item 的默认最小尺寸是内容宽度，长 URL、JSON 或未断词的正文会把整列撑破并拉出横向滚动条，必须允许缩到 0。 */
 .lab-grid { display: grid; gap: var(--lab-gap); grid-template-columns: repeat(var(--cols, 2), minmax(0, 1fr)); }
 .lab-stack { display: flex; flex-direction: column; gap: var(--lab-gap); }
+/* 左窄右宽（列表 + 详情）。align-items:start 是关键：右栏详情很高时左栏面板不该被拉伸到一样高 */
 .lab-split { display: grid; gap: var(--lab-gap); grid-template-columns: var(--split, 340px) minmax(0, 1fr); align-items: start; }
+/* flex-wrap 必需：筛选项多的面板在窄屏要折到第二行而不是溢出 */
 .lab-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 .lab-spacer { flex: 1 1 auto; }
 
-/* ── 指标块 ───────────────────────────────────────────── */
 .lab-metric { background: var(--lab-fill-2); border: 1px solid var(--lab-line-2); border-radius: var(--lab-r); padding: 12px 14px; }
 .lab-metric-k { font-size: 12px; color: var(--lab-ink-3); }
 .lab-metric-v { font-size: 24px; font-weight: 700; color: var(--lab-ink); line-height: 1.3; font-variant-numeric: tabular-nums; }
 .lab-metric-x { font-size: 11.5px; color: var(--lab-ink-4); }
+/* 语气只换底色与描边，数字颜色不变；is-danger 对应"已提交"，意味着有人交出了凭据 */
 .lab-metric.is-accent { background: var(--lab-accent-soft); border-color: #c7e2de; }
 .lab-metric.is-warn { background: var(--lab-warn-soft); border-color: #eddcbf; }
 .lab-metric.is-danger { background: var(--lab-danger-soft); border-color: #f0ccd1; }
 
-/* ── 文本与辅助 ───────────────────────────────────────── */
+/* 文本与辅助：这组只改字号/颜色/间距，从不改盒模型，所以可以安全地套在 el-table 单元格和插槽里 */
 .lab-hint { font-size: 12px; color: var(--lab-ink-3); line-height: 1.75; }
 .lab-hint.is-mute { color: var(--lab-ink-4); }
 .lab-strong { color: var(--lab-ink); font-weight: 700; }
+/* 成块代码/原文视图（协议文档、请求体抽屉、采集原文）。文字色 #d6e2ea 是深底专用色，白底上不可用。pre-wrap 与 break-all 必须一起留：前者保住手写的缩进与换行，后者切断没有空格的长 URL / JSON，只留一个另一个就失效。max-height + overflow auto 让超长内容内部滚动，免得抽屉里看正文要整页滚、标题被推走。 */
 .lab-mono {
   font-family: Consolas, "Cascadia Mono", monospace;
   background: var(--lab-ink);
@@ -132,6 +157,7 @@
   font-size: 12px;
   line-height: 1.7;
 }
+/* 行内版代码：表格里嵌一段令牌、路径、字段名时用，与 .lab-mono 反色。white-space:normal 是必需的，行内不该因为一个长 URL 把整行撑高 */
 .mono-inline {
   font-family: Consolas, "Cascadia Mono", monospace;
   background: var(--lab-fill);
@@ -141,21 +167,26 @@
   font-size: 11.5px;
   white-space: normal;
 }
+/* 键值行：靠 flex-wrap 自然折行，gap 两个值是行距 4px / 列距 18px */
 .lab-kv { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 12.5px; color: var(--lab-ink-3); }
 .lab-kv b { color: var(--lab-ink-2); font-weight: 600; }
+/* 状态胶囊：border-radius 999px 是全文件唯一的全圆，面板都只圆 5px，为的是让状态在密集表格里先跳出来。gap:4px 给圆点 + 文字的组合留位 */
 .lab-chip {
   display: inline-flex; align-items: center; gap: 4px;
   padding: 1px 8px; border-radius: 999px;
   font-size: 11.5px; font-weight: 600;
   background: var(--lab-fill); color: var(--lab-ink-3); border: 1px solid var(--lab-line);
 }
+/* soft 底 + 同族深字 + 再深一档描边，三个值成套改才不脱色。描边色是 soft 底深一档的中间值，只在这里出现，抽成令牌会被误当成第五种语义色 */
 .lab-chip.is-ok { background: var(--lab-ok-soft); color: var(--lab-ok); border-color: #c3e3d1; }
 .lab-chip.is-warn { background: var(--lab-warn-soft); color: var(--lab-warn); border-color: #eddcbf; }
 .lab-chip.is-danger { background: var(--lab-danger-soft); color: var(--lab-danger); border-color: #f0ccd1; }
 .lab-chip.is-accent { background: var(--lab-accent-soft); color: var(--lab-accent); border-color: #c7e2de; }
 .lab-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--lab-ink-4); display: inline-block; }
+/* 光环用 box-shadow 而不是 border：border 会把元素撑大到 13px，同一列里亮着和没亮的行高就不齐，状态点必须占位一致才不会让表格行跳 */
 .lab-dot.is-live { background: var(--lab-ok); box-shadow: 0 0 0 3px var(--lab-ok-soft); }
 
+/* 细进度条（授权有效期剩余、提交率）：fill 的宽度由调用方行内 style 给百分比 */
 .lab-bar { height: 6px; border-radius: 3px; background: var(--lab-line-2); overflow: hidden; }
 .lab-bar-fill { height: 100%; background: var(--lab-accent); border-radius: 3px; }
 .lab-bar-fill.is-warn { background: var(--lab-warn); }
@@ -163,30 +194,42 @@
 
 .lab-list { display: flex; flex-direction: column; gap: 8px; }
 .lab-list-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid var(--lab-line-2); border-radius: var(--lab-r); background: var(--lab-fill-2); font-size: 12.5px; }
+/* 空态文案要写下一步动作，不要只写"暂无数据" */
 .lab-empty { padding: 34px 12px; text-align: center; color: var(--lab-ink-4); font-size: 12.5px; }
 
-/* ── Element Plus 观感收敛 ────────────────────────────── */
+/* Element Plus 观感收敛：只把组件库拉回我们的字号、色阶与密度。能用组件自带 CSS 变量主题的（表格底色、边框色、分页字号）一律走变量，不硬压样式，否则 element-plus 升级时会冒出预料外的覆盖。全文件四处 !important：下面三处 + 最后 860px 断点一处，每处都注明压的是组件库哪条规则。 */
 .el-table { font-size: 12.5px; --el-table-header-bg-color: var(--lab-fill); --el-table-border-color: var(--lab-line-2); }
+/* !important 压的是组件的 `.el-table th.el-table__cell{background-color:var(--el-table-header-bg-color)}` 和分组表头 `.el-table thead.is-group th.el-table__cell`，靠后加载者赢不稳 */
 .el-table th.el-table__cell { background: var(--lab-fill) !important; color: var(--lab-ink-3); font-weight: 600; font-size: 12px; }
+/* 只压上下、左右留 0：左右内缩由组件的 .el-table .cell 负责（自带 padding:0 12px），这里再给一次就成了双倍缩进；small 默认 4px 太挤，抬到 7px */
 .el-table .el-table__cell { padding: 7px 0; }
+/* !important 压的是 `.el-table--enable-row-hover .el-table__body tr:hover>td.el-table__cell`，类名层级比这条多，不加就输。多数表一行可点，需要这个反馈 */
 .el-table__row:hover > td.el-table__cell { background: var(--lab-accent-soft) !important; }
 .el-button { font-weight: 600; }
+/* el-tag 保持方角，胶囊形状只留给 .lab-chip，同屏时才分得清哪个是状态 */
 .el-tag { border-radius: var(--lab-r-sm); font-weight: 600; }
+/* --lab-r-lg 只用在这一处 */
 .el-dialog { border-radius: var(--lab-r-lg); }
+/* margin-right:0 给早期版本组件留在标题区的右侧外边距兜底，升级后这条线也依旧通边；关闭钮是绝对定位的 headerbtn，不受影响 */
 .el-dialog__header { padding-bottom: 12px; margin-right: 0; border-bottom: 1px solid var(--lab-line-2); }
+/* 组件默认给抽屉头 margin-bottom:32px，配上分隔线会空出一大块 */
 .el-drawer__header { margin-bottom: 0; padding-bottom: 12px; border-bottom: 1px solid var(--lab-line-2); color: var(--lab-ink); font-weight: 700; }
 .el-form-item__label { color: var(--lab-ink-3); font-weight: 600; }
 .el-alert { border-radius: var(--lab-r); }
+/* !important 压的是 `.el-descriptions__label:not(.is-bordered-label){color:var(--el-text-color-primary)}`，多带一个 :not 后特异性比单类名高，不压盖不掉 */
 .el-descriptions__label { color: var(--lab-ink-3) !important; }
 .el-textarea__inner, .el-input__wrapper { border-radius: var(--lab-r); }
+/* 分页字号也走组件变量通道，不硬压 */
 .el-pagination { --el-pagination-font-size: 12px; }
 
+/* 断点只有 1180 / 860 两个，桌面工具不做完整移动适配。降列这两条用 [style*="--cols: 3"] 属性子串匹配，因为媒体查询没法按自定义属性的值挑元素，只能匹配属性文本；源文件里 "--cols: 3" 和 "--cols:4" 两种写法都有，漏一条会一半降列一半还挤着。谁把 --cols 改成 :style 绑定（走 CSSOM，不落到 attribute 上），这两条就会静默失效。 */
 @media (max-width: 1180px) {
   .lab-grid[style*="--cols: 3"], .lab-grid[style*="--cols:4"] { grid-template-columns: 1fr 1fr; }
   .lab-split { grid-template-columns: 1fr; }
   .lab-brand-txt small { display: none; }
 }
 @media (max-width: 860px) {
+  /* 上面 1180 那两条带 [style*=...] 的属性选择器特异性更高，不加 !important 会被顶回去，窄屏停在两列而不是单列 */
   .lab-grid { grid-template-columns: 1fr !important; }
   .lab-page-hd { flex-wrap: wrap; }
   .lab-page-ops { margin-left: 0; }
