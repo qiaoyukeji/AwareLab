@@ -7,6 +7,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { all, get, run, update, nowIso } from '../platform/storage/rows.js';
 import { config } from '../platform/settings.js';
+import { describePid, findListenerPid } from '../platform/portGuard.js';
 import { buildSiteHandler } from './siteHandler.js';
 
 // 进程内实况表：key 是 ip:port，重启靠 restoreSites 从库里恢复
@@ -51,6 +52,13 @@ export function startSite(site) {
   // listen 失败是异步的，EADDRINUSE 不会 throw 给调用方，只能靠回调把实况写回库里
   server.on('error', (err) => {
     run("UPDATE web_sites SET status='error', updated_at=? WHERE id=?", [nowIso(), site.id]);
+    // 采集面端口区间是 8000–9999，很容易撞上机器上别的服务；只说「启动失败」操作员还得自己去查 netstat
+    if (err.code === 'EADDRINUSE') {
+      const owner = describePid(findListenerPid(site.listen_port));
+      const who = owner ? `${owner.name}（PID ${owner.pid}）` : '未知进程（可能权限不足）';
+      console.error(`[capture] 站点 ${key} 启动失败: 端口被 ${who} 占用；停掉它或给站点换一个端口。`);
+      return;
+    }
     console.error(`[capture] 站点 ${key} 启动失败: ${err.message}`);
   });
 

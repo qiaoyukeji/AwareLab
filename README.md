@@ -115,7 +115,7 @@ npm run build:exe                 # 先构建 web/dist，再内联、打包、�
 
 双击 `AwareLab.exe` 后会发生这些事：同级建 `AwareLab-data/`（目录不可写时退到 `%LOCALAPPDATA%\AwareLab`）→ 生成 `config.yaml` → 迁移数据库、写入内置素材 → 解包前端到 `AwareLab-data/web/` → 启动服务 → 自动打开浏览器到管理端。**关掉那个黑色窗口就等于停服**；同一台机器上要长期跑，把它放进启动项或用任务计划程序拉起即可。
 
-首次启动的账号写在窗口里，口令在 `AwareLab-data/config.yaml` 的 `panel.password`（与源码运行一致，登录后建议立刻改）。端口被占用时窗口不会闪退，而是打印「端口已被占用」并提示去改 `config.yaml` 的 `panel.port`。
+首次启动的账号写在窗口里，口令在 `AwareLab-data/config.yaml` 的 `panel.password`（与源码运行一致，登录后建议立刻改）。端口被占用时不会只丢一句「被占用」：启动前会先探测一次，把占用进程的名称、PID、可执行路径与命令行打出来，并在交互式窗口里问一句是否结束它（输入 `y` 即可，`AWARELAB_PORT_FREE=1` 可跳过询问直接释放，供无人值守部署使用）。无人值守或没有权限时，按提示手动 `taskkill` 或改 `config.yaml` 的 `panel.port`。
 
 几个打包相关的实话：exe 没有代码签名，SmartScreen 或个别杀软会提示「未知发布者」，这是 Node SEA 打包的常态，内网分发时给个哈希或加到白名单即可；产物约 102MB 是因为里面带着 Node 运行时；`dist/`、`server/build/` 都不进仓库，发布走 Release 附件。
 
