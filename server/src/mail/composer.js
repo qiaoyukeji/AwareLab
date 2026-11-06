@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { all, get } from '../platform/storage/rows.js';
 import { config } from '../platform/settings.js';
+import { siteUrl } from '../capture/siteAddress.js';
 import { ENGAGE_BASE } from '../capture/engageScript.js';
 
 // 邮箱地址里有 + @ 这类字符，进 query 前必须编码
@@ -28,9 +29,8 @@ export function publicBase(req) {
 
 /** 站点对访客的地址前缀；端口无条件带上，attachTraceLinks 靠它与 href 逐字比前缀，省略默认端口就匹配不上 */
 function originOf(site) {
-  const proto = site.tls_key && site.tls_cert ? 'https' : 'http';
-  const host = site.domain || (site.listen_ip === '0.0.0.0' ? '127.0.0.1' : site.listen_ip);
-  return `${proto}://${host}:${site.listen_port}`;
+  // 对外地址优先：反代场景监听的是 127.0.0.1:8080，但收件人该看到 https://域名
+  return siteUrl(site);
 }
 
 /** 在听的站点；邮件任务绑定优先，其次全平台只有一个在听站点时直接用它，多于一个且没绑定就交给调用方兜底 */

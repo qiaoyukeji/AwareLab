@@ -45,17 +45,21 @@
           <template #default="{ row }">
             <a class="lab-hint site-link" :href="row.url" target="_blank" rel="noreferrer">{{ row.url }}</a>
             <div class="lab-hint is-mute site-addr-sub">
+              <span v-if="row.public_url" class="site-addr-proxy">反代 →</span>
               <span class="site-addr-ip">{{ row.listen_ip }}:{{ row.listen_port }}</span>
               <span class="site-addr-dot">·</span>{{ row.tls_cert ? 'HTTPS' : 'HTTP' }}
+              <!-- 只监听回环又没配对外地址：链接里的 127.0.0.1 出了本机就打不开，列表上先标出来 -->
+              <span v-if="!row.public_url && isLoopback(row.listen_ip)" class="site-addr-warn">仅本机可达</span>
             </div>
           </template>
         </el-table-column>
         <!-- 授权主体是建站时绑定的授权，级联下线与续期复服都按它算 -->
         <el-table-column prop="auth_scope" label="授权主体" min-width="120" show-overflow-tooltip />
         <!-- 5 个动作并排，宽度按"生成专属链接"不换行留够，避免"删除"被挤到第二行 -->
-        <el-table-column label="操作" width="320" fixed="right">
+        <el-table-column label="操作" width="380" fixed="right">
           <template #default="{ row }">
             <!-- 按钮方向由 status 决定；停止不设前端门禁，开启无授权时服务端 403 -->
+            <el-button link type="primary" @click="openEdit(row)">编辑</el-button>
             <el-button link type="primary" @click="toggle(row)">{{ row.status === 'open' ? '停止' : '开启' }}</el-button>
             <el-button link type="primary" @click="openPeek(row)">链接与上钩</el-button>
             <el-button link type="primary" @click="issueLink(row)">生成专属链接</el-button>
@@ -71,7 +75,7 @@
 
     <!-- 新建抽屉：三段对应服务端建站的三组校验；close-on-click-modal=false 防止误点空白丢建档 -->
     <el-drawer v-model="drawer" size="620px" :close-on-click-modal="false">
-      <template #header><span class="lab-pane-t">新建钓鱼网站</span></template>
+      <template #header><span class="lab-pane-t">{{ editing ? '编辑钓鱼网站' : '新建钓鱼网站' }}</span></template>
 
       <div class="lab-stack drawer-sections">
         <section>
@@ -94,22 +98,71 @@
           </el-form>
         </section>
 
+        <!-- 访问方式放在最前：它决定链接里有没有端口，是整张表唯一的口径开关。
+             以前「监听域名 + 监听端口」两个字段谁都像对外地址，外网域名配 8080 就被拼成 域名:8080 -->
         <section>
-          <div class="section-t">监听地址</div>
+          <div class="section-t">访客怎么访问</div>
+          <el-form label-position="top">
+            <el-form-item label="访问方式">
+              <el-radio-group v-model="form.access_mode" @change="onModeChange">
+                <el-radio-button value="proxy">域名反代（nginx）</el-radio-button>
+                <el-radio-button value="direct">IP:端口直连</el-radio-button>
+              </el-radio-group>
+              <!-- 两种方式的差别就一句：访客地址里带不带端口 -->
+              <div v-if="proxyMode" class="lab-hint is-mute">
+                访客只看到 <code>http://域名/…</code> 或 <code>https://域名/…</code>，不带 :8080；哪个协议取决于下面的「对外协议」，nginx 再把请求反代到本机监听端口。
+              </div>
+              <div v-else class="lab-hint is-mute">
+                访客直接访问 <code>ip:端口</code>，链接里会带上监听端口；适合内网演习或端口本来就对公网开放的情况。
+              </div>
+            </el-form-item>
+            <!-- 域名可留空（直连时退回监听 IP）；填了必须命中授权名单或泛域名，校验在服务端 -->
+            <el-form-item :label="proxyMode ? '对外域名' : '访问域名（可选）'">
+              <el-input v-model="form.domain" :placeholder="proxyMode ? 'phish.example.com' : '留空就用下面的监听 IP'" @blur="tidyDomain" />
+              <div v-if="proxyMode" class="lab-hint is-mute">
+                只写域名（nginx 不在 443/80 时可带端口，如 phish.example.com:8443），不要写 <code>http://</code> 和路径。
+                必须落在「演练授权」的授权名单内，否则访客会被直接拒绝。
+              </div>
+              <div v-else class="lab-hint is-mute">
+                可选：目标机能访问到的域名或 IP，链接里就用它代替监听 IP。留空时按监听 IP 拼（0.0.0.0 会写成 127.0.0.1，只在本机有效）。
+                域名同样要落在授权名单内。
+              </div>
+            </el-form-item>
+            <!-- 协议只决定链接前缀，与 nginx 回源到本机用的是 http 还是 https 无关；两种都合法，不强制 https -->
+            <el-form-item v-if="proxyMode" label="对外协议">
+              <el-radio-group v-model="form.public_scheme">
+                <el-radio-button value="https">https</el-radio-button>
+                <el-radio-button value="http">http</el-radio-button>
+              </el-radio-group>
+              <div class="lab-hint is-mute">
+                按访客浏览器地址栏里看到的协议选，不是 nginx 回源用的协议：nginx 只监听 80 明文就选 http，
+                平台不会把 http 擅自改成 https；选 https 要在 nginx 上装好证书，否则浏览器先报证书错误。
+              </div>
+            </el-form-item>
+          </el-form>
+        </section>
+
+        <section>
+          <div class="section-t">{{ proxyMode ? '本机监听（nginx 反代到这里）' : '本机监听地址' }}</div>
           <el-form label-position="top">
             <el-form-item label="监听 IP">
-              <el-input v-model="form.listen_ip" placeholder="对本机所有网卡服务就填 0.0.0.0" />
-              <div class="lab-hint is-mute">填 0.0.0.0 时这个端口对本机所有网卡开放，同一网络内都能访问；只在本机验证就填 127.0.0.1。管理后台默认只听 127.0.0.1，与这里互不影响。</div>
+              <el-input v-model="form.listen_ip" :disabled="Boolean(editing)" placeholder="对本机所有网卡服务就填 0.0.0.0" />
+              <div v-if="proxyMode" class="lab-hint is-mute">
+                反代场景通常填 127.0.0.1：只有本机的 nginx 回源过来，这个口不对外；nginx 在另一台机器上时才填内网 IP。
+              </div>
+              <div v-else class="lab-hint is-mute">
+                填 0.0.0.0 时这个端口对本机所有网卡开放，同一网络内都能访问；只在本机验证就填 127.0.0.1。管理后台默认只听 127.0.0.1，与这里互不影响。
+              </div>
+              <div v-if="editing" class="lab-hint is-mute">监听地址建站后不可改，要换端口请新建一个站点。</div>
             </el-form-item>
             <!-- 端口区间读自 /settings 的 capture_port_range；区间外服务端必拒，前端不写死免得口径漂移 -->
             <el-form-item label="监听端口">
-              <el-input v-model.number="form.listen_port" :placeholder="`${portRange[0]}-${portRange[1]}，注意防火墙放通与端口占用`" />
-              <div class="lab-hint is-mute">端口落在配置区间内才会被接受；区间在「系统设置 · 运行参数」里。</div>
-            </el-form-item>
-            <!-- 域名可留空（只用 IP:端口）；填了必须命中授权名单或泛域名，校验在服务端 -->
-            <el-form-item label="监听域名">
-              <el-input v-model="form.domain" placeholder="可选，仅当用域名访问时填写，例如 lab.example.cn" />
-              <div class="lab-hint is-mute">域名必须落在「演练授权」登记的授权名单内，否则钓鱼网站会直接拒绝访问。</div>
+              <el-input v-model.number="form.listen_port" :disabled="Boolean(editing)" :placeholder="`${portRange[0]}-${portRange[1]}，注意防火墙放通与端口占用`" />
+              <div v-if="proxyMode" class="lab-hint is-mute">
+                nginx 里 <code>proxy_pass</code> 指向的就是这个口；它只在内网出现，不会写进任何链接。
+              </div>
+              <div v-else class="lab-hint is-mute">访客会在链接里看到这个端口，注意防火墙放通与端口占用。</div>
+              <div class="lab-hint is-mute">端口落在配置区间 {{ portRange[0] }}-{{ portRange[1] }} 内才会被接受；区间在「系统设置 · 运行参数」里。</div>
             </el-form-item>
           </el-form>
         </section>
@@ -128,6 +181,32 @@
             </el-form-item>
           </el-form>
         </section>
+
+        <!-- 拼接结果预览：字段一改这里就跟着变，口径与服务端 siteAddress.js 的 siteUrl 一致；
+             以前要用户自己脑补"域名后面到底带不带 :8080"，填错只能等邮件发出去才发现 -->
+        <section>
+          <div class="section-t">链接拼接结果</div>
+          <div class="link-preview">
+            <div class="preview-row">
+              <span class="preview-k">访客打开的页面</span>
+              <code class="preview-v">{{ draft.pageUrl }}</code>
+            </div>
+            <div class="preview-row">
+              <span class="preview-k">专属链接（一人一条）</span>
+              <code class="preview-v">{{ draft.linkUrl }}</code>
+            </div>
+            <div class="preview-row">
+              <span class="preview-k">邮件变量 {{ SITE_VAR }}</span>
+              <code class="preview-v">{{ draft.origin }}</code>
+            </div>
+            <div class="preview-row">
+              <span class="preview-k">实际监听</span>
+              <code class="preview-v">{{ draft.listen }}</code>
+            </div>
+          </div>
+          <div class="lab-hint is-mute">令牌由服务端按人签发，创建后在列表「生成专属链接」里取；保存后以接口返回的地址为准。</div>
+          <el-alert v-if="draft.warn" class="preview-warn" :title="draft.warn" type="warning" :closable="false" show-icon />
+        </section>
       </div>
 
       <template #footer>
@@ -135,7 +214,7 @@
           <!-- 令牌不进表单，建好站后由专属链接携带 -->
           <span class="lab-hint is-mute footer-note">创建后令牌由专属链接携带，可在列表「生成专属链接」为每位收件人单独生成。</span>
           <el-button @click="drawer = false">取消</el-button>
-          <el-button type="primary" :loading="saving" @click="save">创建钓鱼网站</el-button>
+          <el-button type="primary" :loading="saving" @click="save">{{ editing ? '保存修改' : '创建钓鱼网站' }}</el-button>
         </div>
       </template>
     </el-drawer>
@@ -275,8 +354,22 @@ import { fmtTime as ts } from '../../utils/time';
 defineProps({ gate: { type: Object, default: null } });
 
 // 新建表单初值：status=open（建好即投放）与 0.0.0.0 是演练常态，8080 落在默认区间；
-// 真占用/越界由服务端 portError 判，前端不复写规则
-const BLANK = { status: 'open', template_id: '', listen_ip: '0.0.0.0', listen_port: 8080, domain: '', tls_key: '', tls_cert: '' };
+// 真占用/越界由服务端 portError 判，前端不复写规则。
+// access_mode 是界面口径，不落库：proxy 时把域名写进 public_url（链接只剩域名），direct 时清空 public_url 按监听口拼。
+const BLANK = {
+  status: 'open',
+  template_id: '',
+  access_mode: 'direct',
+  public_scheme: 'https',
+  listen_ip: '0.0.0.0',
+  listen_port: 8080,
+  domain: '',
+  tls_key: '',
+  tls_cert: '',
+};
+
+// 邮件正文里的站点变量名，模板中用常量插值，避免和 Vue 的 {{ }} 语法打架
+const SITE_VAR = '{{site_url}}';
 
 // 站点列表：服务端按创建时间倒序
 const rows = ref([]);
@@ -285,6 +378,8 @@ const templates = ref([]);
 // 表格勾选的行：只服务批量删除
 const selection = ref([]);
 const drawer = ref(false);
+// 编辑中的站点行；null 表示新建。监听 IP/端口建站后不可改，表单里上锁
+const editing = ref(null);
 // 建档 loading：建站可能当场起监听，没转圈会像点没生效
 const saving = ref(false);
 // 端口可填区间：真实值来自 /settings 的 capture_port_range
@@ -298,6 +393,95 @@ const liveCount = computed(() => rows.value.filter((r) => r.running).length);
 const portCount = computed(() => new Set(rows.value.filter((r) => r.running).map((r) => r.listen_port)).size);
 // 本页条数：/web-sites 不分页，本页=全部
 const shownCount = computed(() => rows.value.length);
+
+// 访问方式：proxy=外网域名 + nginx 反代（链接里没有端口），direct=访客直连 ip:端口（链接里带监听口）
+const proxyMode = computed(() => form.access_mode !== 'direct');
+
+/** 是否回环监听（含 IPv6 写法）：只有本机可达，直连链接发给别人一定打不开。 */
+function isLoopback(ip) {
+  return ip === '127.0.0.1' || ip === '::1' || ip === 'localhost';
+}
+
+/**
+ * 把用户填的域名拆成「协议 + 主机 + 端口」。域名列只存主机名——授权名单是逐字比对，带端口必然失配；
+ * 端口只进对外地址。顺手吃掉 http:// 前缀、路径与查询串，从地址栏整段粘进来也能用；
+ * scheme 只在原文真的写了协议时才有值，供「用户粘了 http:// 就按 http 走」使用。
+ */
+function splitHost(value) {
+  const text = String(value || '').trim();
+  if (!text) return { scheme: '', host: '', port: '' };
+  const hasScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(text);
+  try {
+    const url = new URL(hasScheme ? text : `http://${text}`);
+    return { scheme: hasScheme ? url.protocol.replace(':', '') : '', host: url.hostname, port: url.port };
+  } catch {
+    return { scheme: '', host: '', port: '' };
+  }
+}
+
+/** 失焦收敛：反代保留 :端口（nginx 不在 443/80 时要它），直连只留主机名，端口由监听端口决定。 */
+function tidyDomain() {
+  const { scheme, host, port } = splitHost(form.domain);
+  if (!host) {
+    form.domain = String(form.domain || '').trim();
+    return;
+  }
+  // 连协议一起粘进来的（http://phish.example.com），按用户写的协议走，不被上面的默认 https 覆盖
+  if (proxyMode.value && (scheme === 'http' || scheme === 'https')) form.public_scheme = scheme;
+  form.domain = proxyMode.value && port ? `${host}:${port}` : host;
+}
+
+/** 默认端口不写进链接：https 配 443、http 配 80，与服务端 URL.origin 的归一保持一致。 */
+function trimPort(scheme, port) {
+  if (!port) return '';
+  return String(port) === (scheme === 'https' ? '443' : '80') ? '' : `:${port}`;
+}
+
+/** 切换访问方式时顺手把监听 IP 填成常用配对：只在还是出厂默认值时动，改过的不覆盖。 */
+function onModeChange() {
+  if (editing.value) return; // 监听地址建站后不可改，别动它
+  if (proxyMode.value && form.listen_ip === '0.0.0.0') form.listen_ip = '127.0.0.1';
+  else if (!proxyMode.value && form.listen_ip === '127.0.0.1') form.listen_ip = '0.0.0.0';
+}
+
+/**
+ * 拼接结果预览。口径与服务端 server/src/capture/siteAddress.js 的 siteUrl 保持一致：
+ * 有对外地址就用它，否则协议取证书、主机取域名或监听 IP（0.0.0.0 记为 127.0.0.1），默认端口省略。
+ * 两处要同步，否则预览与保存后拿到的真实链接会互相打架。
+ */
+const draft = computed(() => {
+  const { scheme, host, port } = splitHost(form.domain);
+  const listenPort = String(Number(form.listen_port) || '');
+  const listenIp = form.listen_ip || '127.0.0.1';
+  const tls = Boolean(form.tls_cert && form.tls_key);
+  // 直连：协议跟着证书走，没填域名时退回监听 IP
+  const directScheme = tls ? 'https' : 'http';
+  const directHost = host || (listenIp === '0.0.0.0' ? '127.0.0.1' : listenIp);
+  const directOrigin = `${directScheme}://${directHost}${trimPort(directScheme, listenPort)}`;
+  // 反代：链接只剩对外域名；协议按「对外协议」，用户直接粘了 http:// 时以他写的为准
+  const proxyScheme = scheme === 'http' || scheme === 'https' ? scheme : form.public_scheme;
+  // 域名没填时退回直连口径，让"会生成什么链接"当场可见而不是悄悄拼成空的
+  const origin = proxyMode.value && host
+    ? `${proxyScheme}://${host}${trimPort(proxyScheme, port)}`
+    : directOrigin;
+  const listen = `${listenIp === '0.0.0.0' ? '0.0.0.0（全部网卡）' : listenIp}:${listenPort || '-'}`;
+  // 三种填法会拼出访客打不开的链接，先在预览里点出来，不等到邮件发出去才发现
+  let warn = '';
+  if (proxyMode.value && !host) {
+    warn = '域名反代必须填对外域名，否则链接会退回「监听 IP:端口」那种带端口的写法。';
+  } else if (!proxyMode.value && isLoopback(listenIp) && host) {
+    warn = `监听在 ${listenIp} 却填了访问域名：链接会变成 ${origin}，外网访客打不开；走 nginx 反代请把访问方式改成「域名反代」。`;
+  } else if (!proxyMode.value && isLoopback(listenIp)) {
+    warn = '监听在回环地址，链接只能在本机打开；要让别人访问就把监听 IP 改成 0.0.0.0，或改用「域名反代」。';
+  }
+  return {
+    origin,
+    pageUrl: `${origin}/`,
+    linkUrl: `${origin}/?tk=<每人一个的令牌>`,
+    listen: proxyMode.value && host ? `${listen}（仅 nginx 回源，不出现在链接里）` : listen,
+    warn,
+  };
+});
 
 // 链接与上钩回看抽屉
 const peek = ref(false);
@@ -400,20 +584,60 @@ async function loadMeta() {
 
 /** 打开新建抽屉：每次都 Object.assign(form, BLANK)，上一站的私钥域名不留到下一次。 */
 function openCreate() {
+  editing.value = null;
   Object.assign(form, BLANK);
+  drawer.value = true;
+}
+
+/** 编辑已有站点：只回填 PUT 接受的字段；监听 IP/端口建站后不可改，界面上锁并说明原因。 */
+function openEdit(row) {
+  editing.value = row;
+  // 有 public_url 就是反代站，域名框要把它的端口一并带出来，否则改完保存会丢 :8443
+  const pub = row.public_url ? splitHost(row.public_url) : null;
+  Object.assign(form, BLANK, {
+    template_id: row.template_id || '',
+    access_mode: row.public_url ? 'proxy' : 'direct',
+    public_scheme: String(row.public_url || '').startsWith('http://') ? 'http' : 'https',
+    domain: pub?.host ? `${pub.host}${pub.port ? `:${pub.port}` : ''}` : row.domain || '',
+    tls_key: row.tls_key || '',
+    tls_cert: row.tls_cert || '',
+    listen_ip: row.listen_ip,
+    listen_port: row.listen_port,
+    status: row.status,
+  });
   drawer.value = true;
 }
 
 /**
  * 建档：POST /web-sites，status=open 时服务端当场 startSite 占端口并写审计 site.create（记"有没有配 TLS"，不记私钥）。
- * 前置校验只做"没选素材"这一项，其他交服务端给中文原因，前端不复写规则免得两处漂移。
+ * 改档：PUT /web-sites/:id，只发白名单字段；监听地址端口不在其中。
+ * 前置校验只做"没选素材""反代没填域名"这两项，其他交服务端给中文原因，前端不复写规则免得两处漂移。
  */
 async function save() {
   if (!form.template_id) return ElMessage.warning('请选择假登录页');
+  const { scheme, host, port } = splitHost(form.domain);
+  if (proxyMode.value && !host) return ElMessage.warning('域名反代要填对外域名：访客访问的那个域名，不要填 127.0.0.1');
+  // 原文写了 http:// 就以用户写的为准（失焦收敛已同步，这里兜一层：直接点保存时 input 可能还没 blur）
+  const publicScheme = scheme === 'http' || scheme === 'https' ? scheme : form.public_scheme;
+  // 域名列只放主机名（授权名单逐字比对，带端口/协议必然失配）；对外地址只在反代时写，直连清空让服务端按监听口拼
+  const editable = {
+    template_id: form.template_id,
+    domain: host || null,
+    public_url: proxyMode.value && host ? `${publicScheme}://${host}${port ? `:${port}` : ''}` : '',
+    tls_key: form.tls_key,
+    tls_cert: form.tls_cert,
+  };
   saving.value = true;
   try {
-    const data = await http.post('/web-sites', form);
-    ElMessage.success(`网站已就绪：${data.url}`);
+    const data = editing.value
+      ? await http.put(`/web-sites/${editing.value.id}`, editable)
+      : await http.post('/web-sites', {
+        ...editable,
+        status: form.status,
+        listen_ip: form.listen_ip,
+        listen_port: form.listen_port,
+      });
+    ElMessage.success(`${editing.value ? '已保存' : '网站已就绪'}，对外地址：${data.url}`);
     drawer.value = false;
     load();
   } catch (err) {
@@ -519,7 +743,18 @@ onMounted(reload);
 .site-addr-sub { display: flex; align-items: center; gap: 6px; margin-top: 2px; font-size: 11px; }
 /* 副行是地址的补充说明，不再画底色块：主行已经是可点链接，副行再加一块会像另一个控件 */
 .site-addr-ip { font-family: Consolas, "Cascadia Mono", monospace; color: var(--lab-ink-3); }
+.site-addr-proxy { color: var(--lab-accent); font-weight: 600; }
 .site-addr-dot { color: var(--lab-ink-4); }
+/* 回环监听又没配对外地址：链接出了本机就打不开，列表上直接标出来 */
+.site-addr-warn { color: var(--lab-danger); font-weight: 600; }
+/* 拼接结果预览：贴成一块等宽面板，"到底带不带 :8080"一眼可读 */
+.link-preview { border: 1px solid var(--lab-line-2); border-radius: 6px; background: var(--lab-fill-2); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.preview-row { display: flex; align-items: baseline; gap: 10px; font-size: 12px; }
+.preview-k { flex: 0 0 132px; color: var(--lab-ink-3); }
+.preview-v { flex: 1 1 auto; font-family: Consolas, "Cascadia Mono", monospace; color: var(--lab-ink); word-break: break-all; }
+.preview-warn { margin-top: 8px; }
+/* 提示里的行内代码：与正文区分又不抢眼 */
+.lab-hint code { font-family: Consolas, "Cascadia Mono", monospace; background: var(--lab-fill-2); border-radius: 3px; padding: 0 3px; }
 .section-t { font-size: 13px; font-weight: 700; color: var(--lab-ink); margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--lab-line-2); }
 .drawer-sections :deep(.el-form-item) { margin-bottom: 14px; }
 .drawer-foot { display: flex; align-items: center; gap: 8px; }

@@ -10,6 +10,7 @@ import { deploymentBlockReason } from '../platform/configCheck.js';
 import { writeAudit } from '../security/audit.js';
 import { flattenHistory } from '../capture/evidenceStore.js';
 import { isRunning, portError, siteUrl, startSite, stopSite } from '../capture/siteRegistry.js';
+import { normalizePublicUrl, publicUrlProblem } from '../capture/siteAddress.js';
 
 export const siteApi = express.Router();
 
@@ -57,6 +58,9 @@ siteApi.post('/web-sites', (req, res) => {
   }
   // 半套 TLS 拒收：只有证书没私钥 https 起不来，存进库只留一个 status=error 的谜
   if (b.tls_cert && !b.tls_key) return badRequest(res, '配置 HTTPS 需同时提供 TLS 私钥');
+  // 反代场景外网是域名+443、监听的是内网 8080；对外地址决定邮件与二维码里的链接长什么样
+  const urlProblem = publicUrlProblem(b.public_url);
+  if (urlProblem) return badRequest(res, urlProblem);
 
   const now = nowIso();
   const row = {
@@ -71,6 +75,7 @@ siteApi.post('/web-sites', (req, res) => {
     listen_ip: listenIp,
     listen_port: port,
     domain: b.domain || null,
+    public_url: b.public_url ? normalizePublicUrl(b.public_url) : null,
     tls_key: b.tls_key || null,
     tls_cert: b.tls_cert || null,
     created_at: now,
@@ -87,6 +92,7 @@ siteApi.post('/web-sites', (req, res) => {
       listen_ip: row.listen_ip,
       listen_port: row.listen_port,
       domain: row.domain,
+      public_url: row.public_url,
       tls: Boolean(row.tls_cert),
       authorization_scope: auth.scope,
     },
@@ -141,10 +147,14 @@ siteApi.put('/web-sites/:id', (req, res) => {
     return badRequest(res, '仿冒域名不在授权名单内，请调整授权范围');
   }
   if (b.tls_cert && !b.tls_key && !site.tls_key) return badRequest(res, '配置 HTTPS 需同时提供 TLS 私钥');
+  const urlProblem = publicUrlProblem(b.public_url);
+  if (urlProblem) return badRequest(res, urlProblem);
   const patch = { updated_at: nowIso() };
   for (const key of ['template_id', 'domain', 'tls_key', 'tls_cert']) {
     if (b[key] !== undefined) patch[key] = b[key] || null;
   }
+  // 对外地址单独归一：空串表示回到「按监听地址直连」，不是删列
+  if (b.public_url !== undefined) patch.public_url = b.public_url ? normalizePublicUrl(b.public_url) : null;
   update('web_sites', site.id, patch);
   const fresh = get('SELECT * FROM web_sites WHERE id=?', [site.id]);
   if (fresh.status === 'open') {

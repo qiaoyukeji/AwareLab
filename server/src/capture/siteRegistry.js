@@ -9,18 +9,15 @@ import { all, get, run, update, nowIso } from '../platform/storage/rows.js';
 import { config } from '../platform/settings.js';
 import { describePid, findListenerPid } from '../platform/portGuard.js';
 import { buildSiteHandler } from './siteHandler.js';
+import { siteUrl } from './siteAddress.js';
 
 // 进程内实况表：key 是 ip:port，重启靠 restoreSites 从库里恢复
 const listeners = new Map();
 const keyOf = (site) => `${site.listen_ip}:${site.listen_port}`;
 
-/** 展示地址：证书和私钥齐了才写 https，域名留空退回顾监听 IP，0.0.0.0 换成 127.0.0.1；默认端口 80/443 不写进 URL，带 :80 尾巴对演练对象是破绽。 */
-export function siteUrl(site) {
-  const proto = site.tls_cert && site.tls_key ? 'https' : 'http';
-  const host = site.domain || (site.listen_ip === '0.0.0.0' ? '127.0.0.1' : site.listen_ip);
-  const defaultPort = proto === 'https' ? 443 : 80;
-  return `${proto}://${host}:${site.listen_port === defaultPort ? '' : site.listen_port}`.replace(/:$/, '');
-}
+// siteUrl 是「访客看到的地址」：配了 public_url 走反代域名，否则按证书/域名/监听口拼；
+// 具体规则与校验在 ./siteAddress.js，邮箱、二维码、专属链接都从这里取，别再各拼一份。
+export { siteUrl };
 
 /**
  * 写库前的端口占用检查，返回中文错误串或 null。端口要落在 port_range，免得撞掉系统端口和平台自己。

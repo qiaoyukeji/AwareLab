@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import yaml from 'js-yaml';
+import { normalizePublicUrl, siteUrl } from '../src/capture/siteAddress.js';
 
 const SERVER_ROOT = path.resolve(import.meta.dirname, '..');
 const WORK = path.join(SERVER_ROOT, '.verify-mail');
@@ -105,7 +106,43 @@ function latestEml() {
   return files[0]?.full || null;
 }
 
+/**
+ * 拼接口径对照表：界面「链接拼接结果」预览（web/src/workspaces/capture/SitesPane.vue 的 draft）按同一张表实现，
+ * 这里改了必须同步那边，否则用户看到的示例与真正发出去的链接会互相打架。
+ * 关键一条：配了对外地址（反代）就只剩域名，监听端口只留在内网。
+ */
+const URL_TABLE = [
+  ['域名反代', { listen_ip: '127.0.0.1', listen_port: 8080, domain: 'phish.example.com', public_url: 'https://phish.example.com' }, 'https://phish.example.com'],
+  ['反代用 http 不强制 https', { listen_ip: '127.0.0.1', listen_port: 8080, domain: 'phish.example.com', public_url: 'http://phish.example.com' }, 'http://phish.example.com'],
+  ['反代非默认端口', { listen_ip: '127.0.0.1', listen_port: 8080, domain: 'phish.example.com', public_url: 'https://phish.example.com:8443' }, 'https://phish.example.com:8443'],
+  ['反代默认端口不写', { listen_ip: '127.0.0.1', listen_port: 8080, domain: 'phish.example.com', public_url: 'http://phish.example.com:80' }, 'http://phish.example.com'],
+  ['反代显式写监听端口也照填', { listen_ip: '127.0.0.1', listen_port: 8080, domain: 'phish.example.com', public_url: 'http://phish.example.com:8080' }, 'http://phish.example.com:8080'],
+  ['内网域名直连', { listen_ip: '0.0.0.0', listen_port: 8080, domain: 'lab.example.cn', public_url: null }, 'http://lab.example.cn:8080'],
+  ['内网 IP 直连', { listen_ip: '192.168.1.20', listen_port: 8080, domain: null, public_url: null }, 'http://192.168.1.20:8080'],
+  ['0.0.0.0 记为回环', { listen_ip: '0.0.0.0', listen_port: 8080, domain: null, public_url: null }, 'http://127.0.0.1:8080'],
+  ['证书 + 443 省略端口', { listen_ip: '0.0.0.0', listen_port: 443, domain: 'lab.example.cn', tls_key: 'k', tls_cert: 'c', public_url: null }, 'https://lab.example.cn'],
+];
+
+function checkSiteUrlTable() {
+  for (const [label, site, want] of URL_TABLE) {
+    const got = siteUrl(site);
+    check(`拼接口径 · ${label}`, got === want, got);
+  }
+  // 协议必须写全：平台不替用户猜 http/https，否则 http 站点会被悄悄改成 https
+  let bare = '';
+  try {
+    normalizePublicUrl('phish.example.com');
+  } catch (error) {
+    bare = error.message;
+  }
+  check('对外地址必须写全协议', bare.includes('http://'), bare || '未抛错');
+  // 显式 http 必须原样保留，不能被"升级"成 https
+  check('对外地址 http 原样保留', normalizePublicUrl('http://phish.example.com') === 'http://phish.example.com', normalizePublicUrl('http://phish.example.com'));
+}
+
 async function main() {
+  // 纯函数自检先跑：不起服务、不占端口，口径错了立刻看得见
+  checkSiteUrlTable();
   prepare();
   const child = spawn(process.execPath, ['src/boot/main.js'], {
     cwd: SERVER_ROOT,
@@ -144,6 +181,19 @@ async function main() {
     const mail = await api('POST', '/library/use', { kind: 'mail', key: lib.mails[0].key }, token);
     check('内置页面可复制', !!page.id);
     check('内置邮件可复制', !!mail.id);
+    // 2b) 复制时换品牌与主色：只动副本，内置原件保持出厂文案
+    const branded = await api(
+      'POST',
+      '/library/use',
+      { kind: 'page', key: lib.pages[0].key, brand: '蓝湾银行', accent: '#0f766e' },
+      token
+    );
+    check('复制时替换品牌名', branded.html.includes('蓝湾银行') && !branded.html.includes('远山科技'));
+    check('复制时替换主色', /--brand:\s*#0f766e/i.test(branded.html), (branded.html.match(/--brand:\s*#[0-9a-f]{6}/i) || [''])[0]);
+    check('替换后依旧可采集', /name="(username|password|code)"/.test(branded.html));
+    const untouched = await api('GET', '/library', undefined, token);
+    check('内置原件未被改动', untouched.pages[0].html.includes('远山科技'));
+    check('模板带可改点提示', (untouched.pages[0].customize || []).length >= 3);
 
     // 3) 建站：监听 8201，模拟真实部署里的"钓鱼站在 8080、面板在 7778"
     const site = await api(
@@ -153,6 +203,18 @@ async function main() {
       token
     );
     check('站点已创建', site.listen_port === SITE_PORT);
+
+    // 3b) 反代口径：内网监听 127.0.0.1:8201，外网是 https://phish.example.test，链接不该带监听端口
+    const proxied = await api('PUT', `/web-sites/${site.id}`, { public_url: 'https://phish.example.test/' }, token);
+    check('对外地址归一化', proxied.url === 'https://phish.example.test', proxied.url);
+    const direct = await api('PUT', `/web-sites/${site.id}`, { public_url: '' }, token);
+    check('清空对外地址回到监听口', direct.url === `http://127.0.0.1:${SITE_PORT}`, direct.url);
+    const badUrl = await fetch(`${BASE}/web-sites/${site.id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', 'x-alab-token': token },
+      body: JSON.stringify({ public_url: 'https://phish.example.test/login' }),
+    });
+    check('带路径的对外地址被拒', badUrl.status === 400, String(badUrl.status));
 
     // 4) 邮件任务显式绑定该站点，正文同时用 {{site_url}} 与站点的绝对地址
     const body = [

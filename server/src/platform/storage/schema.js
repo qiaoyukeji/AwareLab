@@ -345,6 +345,14 @@ function addUsersAndSms(db) {
   addColumn('sessions', 'role', 'role TEXT');
 }
 
+// v9：站点补「对外访问地址」。反代场景监听口是内网 127.0.0.1:8080，访客看到的是 https://域名，
+// 链接若还按监听口拼就会多出 :8080；这一列让站点自己声明对外的 origin。
+function addSitePublicUrl(db) {
+  const columns = db.prepare('PRAGMA table_info(web_sites)').all();
+  if (columns.some((item) => item.name === 'public_url')) return;
+  db.exec('ALTER TABLE web_sites ADD COLUMN public_url TEXT');
+}
+
 // 迁移清单：数组顺序即执行顺序，version 严格递增且永不改历史条目。up 是字符串就直接 exec，是函数就先查表结构（加列专用）。
 // 加迁移只在尾部 push version=上一项+1；改已发布条目的 SQL 会让老库错位。
 const MIGRATIONS = [
@@ -364,6 +372,8 @@ const MIGRATIONS = [
   { version: 7, label: '内置模板与邮件站点绑定', up: addLibraryColumns },
   // v8：账号体系（管理员/普通用户）与短信验证码登录，sessions 记 user_id/role，发码流水落 sms_send_log
   { version: 8, label: '账号体系与短信认证', up: addUsersAndSms },
+  // v9：站点对外地址（反代域名），邮件链接与二维码按它生成，不再把监听端口带到外网
+  { version: 9, label: '站点对外访问地址', up: addSitePublicUrl },
 ];
 
 // 最新结构版本 = 迁移数组最后一项，启动横幅与自检比对的就是它；别手写成常量
