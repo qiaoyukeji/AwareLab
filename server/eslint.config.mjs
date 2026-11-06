@@ -14,6 +14,10 @@ export default [
     ignores: [
       'node_modules/**',
       'data/**',
+      // 打包中间产物：build/ 是 esbuild 出来的 CJS 单文件与内联前端资源，
+      // dist/ 是最终 exe，都是生成物，lint 它们只会把打包器的输出当成源码问题
+      'build/**',
+      'dist/**',
       '.selftest/**',
       '.qa/**',
       '.qa-prune-check/**',

@@ -1,4 +1,4 @@
-﻿# AwareLab · 安全意识演练平台
+# AwareLab · 安全意识演练平台
 
 <div align="center">
   <img src="brand/awarelab-logo.svg" alt="AwareLab" width="320" />
@@ -103,6 +103,22 @@ npm run build                     # 产出 web/dist，由 server 直接托管
 
 端口约定：**7777 = 前端开发服务器**（只在开发态存在，生产由后端直接托管 `web/dist`），**7778 = 后端管理面与信标面**，钓鱼网站（采集面）另占 8000–9999 里的独立端口，三者互不共用。
 
+## 单文件 exe（Windows，双击即用）
+
+不想装 Node、不想开命令行时，可以把整个平台打成一个 exe：
+
+```bash
+cd server && npm install          # 会装上 esbuild / postject / rcedit / png-to-ico
+npm run build:exe                 # 先构建 web/dist，再内联、打包、写图标、注入 blob
+# 产物：dist/AwareLab.exe（约 102MB）
+```
+
+双击 `AwareLab.exe` 后会发生这些事：同级建 `AwareLab-data/`（目录不可写时退到 `%LOCALAPPDATA%\AwareLab`）→ 生成 `config.yaml` → 迁移数据库、写入内置素材 → 解包前端到 `AwareLab-data/web/` → 启动服务 → 自动打开浏览器到管理端。**关掉那个黑色窗口就等于停服**；同一台机器上要长期跑，把它放进启动项或用任务计划程序拉起即可。
+
+首次启动的账号写在窗口里，口令在 `AwareLab-data/config.yaml` 的 `panel.password`（与源码运行一致，登录后建议立刻改）。端口被占用时窗口不会闪退，而是打印「端口已被占用」并提示去改 `config.yaml` 的 `panel.port`。
+
+几个打包相关的实话：exe 没有代码签名，SmartScreen 或个别杀软会提示「未知发布者」，这是 Node SEA 打包的常态，内网分发时给个哈希或加到白名单即可；产物约 102MB 是因为里面带着 Node 运行时；`dist/`、`server/build/` 都不进仓库，发布走 Release 附件。
+
 ## 配置项
 
 `server/config.yaml`，缺省值即下面这份：
@@ -175,9 +191,13 @@ server/scripts/
   qa.mjs           四维 QA 用例套件：安全 / 功能 / 流程 / 人性化，跑在 server/.qa 隔离实例
   smoke.mjs        实机只读自检：对着已在跑的服务体检，不建站不发信不写库
   verify-mail-links.mjs  邮件链路回归：隔离实例建站发信，断言 .eml 里的链接只落在网站端口
+  verify-screens.mjs     观测大屏回归：三套大屏的取数与 400/404 边界
+  verify-sms.mjs         短信回归：本地假网关复刻阿里云语义，覆盖绑定 / 验码 / 频控 / 权限
+  build-exe.mjs          单文件 exe 打包：内联前端 → esbuild → SEA blob → 图标版本信息 → postject
   purge.mjs        演练数据收尾：只读体检、按保留期清理、一次性清空（命令行专属）
 docs/              使用手册与部署运维（操作员 / 运维）、测试用例与报告（测试）、整改方案与值守分级（项目经理 / 验收）
 brand/             标识、logo、图标与应用规则
+dist/              单文件 exe 产物（不建仓库，发布走 Release 附件）
 LICENSE / NOTICE   Apache-2.0 全文与第三方许可清单
 SECURITY.md        漏洞上报与使用边界      CONTRIBUTING.md  贡献规矩
 CHANGELOG.md       版本记录

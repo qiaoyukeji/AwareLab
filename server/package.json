@@ -1,6 +1,6 @@
 {
   "name": "awarelab-server",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
   "license": "Apache-2.0",
@@ -22,6 +22,7 @@
     "dev": "node --watch src/boot/main.js",
     "test": "node scripts/selftest.mjs",
     "lint": "eslint .",
+    "build:exe": "node scripts/build-exe.mjs",
     "ci": "node scripts/ci.mjs"
   },
   "dependencies": {
@@ -32,6 +33,10 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "eslint": "^10.14.0"
+    "esbuild": "^0.28.2",
+    "eslint": "^10.14.0",
+    "png-to-ico": "^3.0.2",
+    "postject": "^1.0.0-alpha.6",
+    "rcedit": "^5.0.2"
   }
 }

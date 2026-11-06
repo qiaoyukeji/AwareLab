@@ -5,6 +5,9 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+// node:sqlite 是 Node 22.5+ 的内置模块：静态引入是为了让本文件在单文件 exe（CJS）里也能打包——
+// CJS 不支持顶层 await，而打开库必须在模块求值时完成，异步写法在打包产物里会直接编译失败。
+import { DatabaseSync } from 'node:sqlite';
 import { config } from '../settings.js';
 import { applySchema } from './schema.js';
 
@@ -98,8 +101,7 @@ function migratePredecessorDatabase(target, DatabaseSync) {
  */
 // 返回 {driver, db}，driver 给启动横幅/自检显示；任何一步抛错原样上抛 → 顶层 await 失败 → 进程起不来
 // 内存库兜底不做：演练数据落不到盘比启动失败更糟；node:sqlite 要 Node≥22.5，动态 import 让缺模块错误带上下文冒出
-async function openDatabase() {
-  const { DatabaseSync } = await import('node:sqlite');
+function openDatabase() {
   // 先搬迁再打开：新库一旦存在，applySchema 会以为是老库正常启动，历史数据永远接不上（顺序不能倒）
   migratePredecessorDatabase(config.paths.db, DatabaseSync);
   const db = new DatabaseSync(config.paths.db);
@@ -113,8 +115,8 @@ async function openDatabase() {
   return { driver: 'node:sqlite', db };
 }
 
-// 顶层 await：import 本文件即等于库已打开且结构已迁移
+// import 本文件即等于库已打开且结构已迁移
 // 全进程只这一处 new DatabaseSync，下游拿到同一连接同一 WAL；这里抛错就没重试机会，服务起不来（刻意保守）
-const { driver, db } = await openDatabase();
+const { driver, db } = openDatabase();
 
 export { db, driver };

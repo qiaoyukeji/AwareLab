@@ -9,7 +9,10 @@ import crypto from 'node:crypto';
 import yaml from 'js-yaml';
 
 // server 根目录（本文件在 server/src/platform/ 下，往上两级）
-const ROOT = path.resolve(import.meta.dirname, '..', '..');
+// 单文件 exe（Node SEA）里没有源码目录，由启动器把 AWARELAB_HOME 指到用户数据目录；
+// 此时配置、数据与解包出来的前端都落在那里，exe 自身所在目录保持只读也能跑。
+const SEA_HOME = process.env.AWARELAB_HOME ? path.resolve(process.env.AWARELAB_HOME) : null;
+const ROOT = SEA_HOME || path.resolve(import.meta.dirname, '..', '..');
 
 // 数据目录可整体外置：采集到的凭据落盘位置要由部署者显式控制，也让隔离验证在副本上跑完整链路不碰生产数据
 // AWARELAB_DATA / AWARELAB_CONFIG 是给隔离验证用的钩子（selftest 靠它整套指向副本），日常部署不设就落在 server/data 与 server/config.yaml
@@ -122,7 +125,8 @@ config.paths = {
   // 采集到的凭据与证据全在这个库里，所在目录由 AWARELAB_DATA 决定，隔离测试靠把这一项指到副本目录实现
   db: path.join(DATA_DIR, 'awarelab.db'),
   // 前端构建产物目录（仓库根 web/dist，不在 server/ 下）：adminPlane.js 挂载时读一次这里的 index.html，所以 vite build 后必须重启后端
-  webDist: path.resolve(ROOT, '..', 'web', 'dist'),
+  // exe 版把 dist 打包进可执行文件，启动器首次运行时解到这里；单文件里没有 web/ 可找
+  webDist: SEA_HOME ? path.join(SEA_HOME, 'web') : path.resolve(ROOT, '..', 'web', 'dist'),
 };
 
 /**

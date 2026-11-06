@@ -4,6 +4,29 @@
 [语义化版本](https://semver.org/lang/zh-CN/)。版本号以 `server/package.json` 与
 `web/package.json` 的 `version` 为准，两者始终保持一致。
 
+## [2.1.0] - 2026-11-06
+
+把服务端连同前端一起塞进一个 `AwareLab.exe`：双击即用，不需要装 Node、不需要命令行、不需要解压目录。
+
+### 新增
+
+- **单文件 exe（Node SEA）**：`npm --prefix server run build:exe` 产出 `dist/AwareLab.exe`（约 102MB），
+  内联服务端代码与整个 `web/dist`；双击后自动开浏览器到管理端，关窗口即停服。
+- **首次运行自解包**：数据目录优先落在 exe 同级的 `AwareLab-data/`（不可写则退到
+  `%LOCALAPPDATA%\AwareLab`），首次启动生成 `config.yaml`、初始化数据库，并把前端解到 `<home>/web`，
+  用内容哈希判断是否需要重解。
+- **exe 带图标与版本信息**：图标取自 `brand/awarelab-icon-1024.png`，文件属性里的 ProductName /
+  FileDescription / FileVersion 随 `package.json` 版本走。
+- **端口占用不再是闪退**：第二个实例双击时会打印「端口已被占用」与改端口的位置，并保留窗口，
+  不会一闪而过让人以为程序坏了。
+
+### 变更
+
+- `server/src/platform/settings.js` 支持 `AWARELAB_HOME`：exe 模式下配置、数据库、附件、沙箱邮件、
+  截图全部以该目录为根，源码运行不受影响。
+- `server/src/platform/storage/connection.js` 改成同步打开（静态 `import { DatabaseSync }`），
+  以适配 SEA 打包只支持 CJS 的约束；源码运行的调用方式不变。
+
 ## [2.0.0] - 2026-11-06
 
 第二个大版本：把「一个人用的演练工具」做成了「一个团队能值守的平台」——账号分级、短信双因子、

@@ -5,6 +5,13 @@ node_modules/
 web/dist/
 web/.vite/
 
+# 单文件 exe 的打包中间物与产物：sea-main.cjs 是 esbuild 打出来的整包，
+# AwareLab.exe 有 100MB 上下，两者都不该进仓库（发布走 Gitee Release 附件）
+server/build/
+dist/
+server/.exe-test*/
+.exe-shot/
+
 # 运行期配置：含后台路径、账号密码，只留本机
 server/config.yaml
 

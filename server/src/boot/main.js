@@ -4,6 +4,7 @@
  * 启动横幅只打账号不打密码；退出必须走 shutdown 收掉采集端口，否则下次启动 EADDRINUSE；改前端产物后必须重启（外壳只在挂载时读一次）。
  */
 import express from 'express';
+import { spawn } from 'node:child_process';
 import { config, created, CONFIG_FILE } from '../platform/settings.js';
 import { checkConfig, fatalMessage, summarizeConfig } from '../platform/configCheck.js';
 import { driver } from '../platform/storage/connection.js';
@@ -94,6 +95,18 @@ const server = app.listen(config.panel.port, PANEL_BIND, () => {
   }
   // 信标面健康检查，公开无鉴权：给部署者一条进程活着的最短验证路径
   console.log(`\n连通性自检: http://127.0.0.1:${config.panel.port}/alab/health`);
+  // 单文件 exe 双击即用：起监听后直接把默认浏览器带到后台地址，省掉"复制控制台里的 URL"这一步。
+  // cmd /c start 是 Windows 上唯一不依赖额外 shell 关联协议的方式；失败只告警，绝不拦住服务本身。
+  if (process.env.AWARELAB_SEA === '1') {
+    const url = `http://127.0.0.1:${config.panel.port}${panel}/`;
+    try {
+      spawn('cmd.exe', ['/c', 'start', '', url], { windowsHide: true, detached: true, stdio: 'ignore' }).unref();
+      console.log('已尝试打开浏览器；没弹出来就手动访问上面的地址。');
+    } catch (error) {
+      console.log(`打开浏览器失败（${error.message}），请手动访问上面的地址。`);
+    }
+    console.log('关闭这个窗口即停止服务（也可以按 Ctrl+C）。');
+  }
   // 重启不该打断演练：库里 status=open 的站点在这里重新起监听。
   // 授权过期/端口被占的站点起不来由 siteRegistry 内部处理并回写状态；返回 0 就一行都不打。
   const restored = restoreSites();
@@ -107,6 +120,22 @@ const server = app.listen(config.panel.port, PANEL_BIND, () => {
   } else {
     console.log(`数据保留期清理未启用：${maintenance.reason}（演练数据与采集到的口令会一直留存）`);
   }
+});
+
+// 端口被占是 exe 用户最常见的启动失败：双击第二次、或上次的窗口没关干净。给一句人话并留住窗口，
+// 不然控制台一闪而过，用户只看到"打不开"。源码部署仍按原样退出，保持 systemd/容器里快速失败。
+server.on('error', (error) => {
+  if (error.code !== 'EADDRINUSE') throw error;
+  console.error(`\n端口 ${config.panel.port} 已被占用：可能已经开着一个 AwareLab，或上次的窗口没关干净。`);
+  console.error('处理办法：先关掉另一个窗口/进程，再重新双击；确实要换端口就改 config.yaml 的 panel.port。');
+  if (process.env.AWARELAB_SEA === '1') {
+    console.error('\n这个窗口先留着，按 Ctrl+C 或直接关闭即可退出。');
+    // 不用 process.stdin.resume()：双击启动时有控制台 stdin 能挂住，但被计划任务/服务方式拉起时
+    // stdin 可能是 NUL，resume 之后事件循环仍然空转退出，窗口一闪而过。定时器最稳。
+    setInterval(() => {}, 1 << 30);
+    return;
+  }
+  process.exit(1);
 });
 
 // 退出前先收掉采集面监听：残留端口会让下一次启动直接报冲突
