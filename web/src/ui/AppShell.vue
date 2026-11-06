@@ -7,7 +7,7 @@
         <BrandMark />
         <div class="lab-side-brand-txt">
           <b>AwareLab</b>
-          <small>安全意识演练平台</small>
+          <small>安全意识演练平台 · {{ VERSION_TAG }}</small>
         </div>
       </div>
 
@@ -89,7 +89,8 @@
           <component :is="Component" :gate="mandate" />
         </router-view>
         <!-- 页脚是使用边界声明，改动前要确认仍说清"授权范围内 + 数据只留本机" -->
-        <footer class="lab-foot">AwareLab · 本工具仅可用于授权范围内使用的安全意识演练，所有采集数据与凭据只保留在本机</footer>
+        <!-- 版本号同时留在页脚：导航收起时左上角的副标题会隐藏，这里始终可读 -->
+        <footer class="lab-foot">AwareLab {{ VERSION_TAG }} · 本工具仅可用于授权范围内使用的安全意识演练，所有采集数据与凭据只保留在本机</footer>
       </main>
     </div>
   </div>
@@ -107,6 +108,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import http from '../api/client';
+import { VERSION_TAG } from '../version';
 import { useSession } from '../stores/session';
 import GateBadge from './GateBadge.vue';
 import BrandMark from './BrandMark.vue';

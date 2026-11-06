@@ -7,7 +7,7 @@
         <div>
           <b>AwareLab</b>
           <!-- 点明"管理端"：这一页只给操作员看，访客侧永远看不到本平台的任何标识 -->
-          <small>安全意识演练平台 · 管理端</small>
+          <small>安全意识演练平台 · 管理端 · {{ VERSION_TAG }}</small>
         </div>
       </div>
 
@@ -84,6 +84,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { Cellphone, Lock, Message, Upload } from '@element-plus/icons-vue';
 import { useSession } from '../stores/session';
+import { VERSION_TAG } from '../version';
 import BrandMark from './BrandMark.vue';
 
 const route = useRoute();

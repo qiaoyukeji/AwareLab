@@ -6,6 +6,7 @@
 import { createRouter, createWebHashHistory } from 'vue-router';
 import AppShell from '../ui/AppShell.vue';
 import { readToken } from '../api/client';
+import { VERSION_TAG } from '../version';
 
 // 顶栏按演练动作排序
 /**
@@ -68,9 +69,10 @@ router.beforeEach((to) => {
   return true;
 });
 
-/** 落地后同步标签页标题为 工作区名 · AwareLab；没有 meta.title 的（登录页、兜底）只留产品名。 */
+/** 落地后同步标签页标题为 工作区名 · AwareLab v版本号；没有 meta.title 的（登录页、兜底）只留产品名。
+ *  标题栏是最容易被截图带走的一处，带上版本号，用户反馈问题时报的那串字就能直接对上构建。 */
 router.afterEach((to) => {
-  document.title = to.meta?.title ? `${to.meta.title} · AwareLab` : 'AwareLab';
+  document.title = to.meta?.title ? `${to.meta.title} · AwareLab ${VERSION_TAG}` : `AwareLab ${VERSION_TAG}`;
 });
 
 export default router;

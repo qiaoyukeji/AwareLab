@@ -285,7 +285,7 @@
     <footer class="scr-foot">
       <span>网页转化率分母为打开数，邮件转化率分母为登记收件人，两套口径不混算。</span>
       <span>{{ basic.authorization ? `授权：${basic.authorization}` : '未登记有效授权' }} · 刷新于 {{ age }} 秒前 · 每 8 秒自动刷新</span>
-      <span class="scr-warn">仅限本机或受控内网投屏，请勿截图外发</span>
+      <span class="scr-warn">仅限本机或受控内网投屏，请勿截图外发 · AwareLab {{ VERSION_TAG }}</span>
     </footer>
   </div>
 </template>
@@ -301,6 +301,7 @@ import { useRoute, useRouter } from 'vue-router';
 import http from '../api/client';
 import Chart from '../components/Chart.vue';
 import { fmtClock } from '../utils/time';
+import { VERSION_TAG } from '../version';
 
 // 深色屏的语义色：TEAL 已打开 / GOLD 未提交与提醒 / RED 已提交 / BLUE 中性
 const AXIS = '#7d94b0';
