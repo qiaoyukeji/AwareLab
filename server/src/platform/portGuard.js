@@ -182,7 +182,60 @@ export function portOwnerLines(port) {
   return lines;
 }
 
-async function waitUntilFree(port, host, timeoutMs = 6000) {  const deadline = Date.now() + timeoutMs;
+/**
+ * Windows 保留端口段：Hyper-V / WSL / Docker 会整段预留，端口上没有任何进程，
+ * 但 bind 一定失败（EACCES 或 EADDRINUSE）。这是「任务管理器里清空了还是占用」最常见的原因。
+ * 非 Windows 返回空数组。
+ */
+export function excludedRanges() {
+  if (!IS_WINDOWS) return [];
+  const out = runQuiet('netsh', ['interface', 'ipv4', 'show', 'excludedportrange', 'protocol=tcp']);
+  const ranges = [];
+  for (const line of out.split(/\r?\n/)) {
+    const hit = /^\s*(\d{2,5})\s+(\d{2,5})\s*$/.exec(line);
+    if (!hit) continue;
+    ranges.push({ start: Number(hit[1]), end: Number(hit[2]) });
+  }
+  return ranges;
+}
+
+/** 端口是否落在系统保留段里（落在里面时，任何程序都监听不了） */
+export function reservedRangeOf(port) {
+  return excludedRanges().find((range) => port >= range.start && port <= range.end) || null;
+}
+
+/** 找一个能监听的端口：从 from 开始往后试，跳过系统保留段与已有监听（找不到返回 null） */
+export async function findFreePort(from, attempts = 20, host = '127.0.0.1') {
+  const ranges = excludedRanges();
+  for (let port = from; port < from + attempts && port <= 65535; port += 1) {
+    if (ranges.some((range) => port >= range.start && port <= range.end)) continue;
+    if (await portBusy(port, host)) continue;
+    return port;
+  }
+  return null;
+}
+
+/** 命令行诊断：AwareLab.exe --port-status 用，输出一段人话后调用方退出 */
+export function portReport(port) {
+  const pid = findListenerPid(port);
+  const owner = describePid(pid);
+  const range = reservedRangeOf(port);
+  const lines = [];
+  if (owner) {
+    lines.push(`端口 ${port} 正在被监听：`);
+    lines.push(...formatOwner(owner));
+    if (looksLikeAwareLab(owner)) lines.push('判断: 这是另一个 AwareLab 实例，关掉它的窗口即可。');
+  } else if (range) {
+    lines.push(`端口 ${port} 没有监听进程，但它落在 Windows 保留段 ${range.start}-${range.end} 里。`);
+    lines.push('这段端口被 Hyper-V / WSL / Docker 预留，任何程序都监听不了；换一个端口或调整保留段。');
+  } else {
+    lines.push(`端口 ${port} 当前空闲（没有监听进程）。`);
+  }
+  return lines;
+}
+
+async function waitUntilFree(port, host, timeoutMs = 6000) {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (!(await portBusy(port, host))) return true;
     await new Promise((resolve) => setTimeout(resolve, 300));

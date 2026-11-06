@@ -19,9 +19,7 @@ export default [
       'build/**',
       'dist/**',
       // 端口体检/双击实测留下的数据目录（里面是解包出来的前端产物与证据，不是源码）
-      '.portcheck*/**',
-      '.exe-test*/**',
-      '.verify-*/**',
+      '.*/**',
       '.selftest/**',
       '.qa/**',
       '.qa-prune-check/**',

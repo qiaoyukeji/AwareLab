@@ -117,6 +117,8 @@ npm run build:exe                 # 先构建 web/dist，再内联、打包、�
 
 首次启动的账号写在窗口里，口令在 `AwareLab-data/config.yaml` 的 `panel.password`（与源码运行一致，登录后建议立刻改）。端口被占用时不会只丢一句「被占用」：启动前会先探测一次，把占用进程的名称、PID、可执行路径与命令行打出来，并在交互式窗口里问一句是否结束它（输入 `y` 即可，`AWARELAB_PORT_FREE=1` 可跳过询问直接释放，供无人值守部署使用）。无人值守或没有权限时，按提示手动 `taskkill` 或改 `config.yaml` 的 `panel.port`。
 
+如果**每次都提示被占用、任务管理器里却找不到 AwareLab**，多半是 7778 落在了 Windows 保留段（Hyper-V / WSL / Docker 预留），这类端口连 `System` 都杀不掉。新版启动时会识别保留段并自动换到相邻可用端口、把新端口写回 `config.yaml`；也可以先在 cmd 里跑 `AwareLab.exe --port-status` 看诊断（会打印占用者或保留段，并给出可用的替代端口）。`AwareLab.exe --free-port` 等于对"是否结束占用进程"自动回答 `y`。
+
 几个打包相关的实话：exe 没有代码签名，SmartScreen 或个别杀软会提示「未知发布者」，这是 Node SEA 打包的常态，内网分发时给个哈希或加到白名单即可；产物约 102MB 是因为里面带着 Node 运行时；`dist/`、`server/build/` 都不进仓库，发布走 Release 附件。
 
 ## 配置项

@@ -5,7 +5,7 @@
  */
 import express from 'express';
 import { spawn } from 'node:child_process';
-import { config, created, CONFIG_FILE } from '../platform/settings.js';
+import { config, created, CONFIG_FILE, persistConfigValue } from '../platform/settings.js';
 import { checkConfig, fatalMessage, summarizeConfig } from '../platform/configCheck.js';
 import { driver } from '../platform/storage/connection.js';
 import { securityHeaders } from '../platform/net/securityHeaders.js';
@@ -15,7 +15,7 @@ import { restoreSites, stopAllSites } from '../capture/siteRegistry.js';
 import { startMaintenanceTimer } from '../platform/maintenance.js';
 import { seedBuiltins } from '../library/seed.js';
 import { ensureAdminUser } from '../security/users.js';
-import { ensurePortFree, portOwnerLines } from '../platform/portGuard.js';
+import { ensurePortFree, portOwnerLines, findFreePort, findListenerPid, portReport, reservedRangeOf } from '../platform/portGuard.js';
 
 // 横幅第一行；改名要同步 README、docs/使用手册.md 与前端标题
 const BANNER = 'AwareLab 安全意识演练平台';
@@ -48,6 +48,41 @@ let server = null;
  * 而 CJS 不支持顶层 await（打包会直接报错）。顶层只留一个不 await 的调用。
  */
 async function boot() {
+  // 命令行诊断：双击出来的窗口一闪而过时，用户可以在 cmd 里跑下面两条命令看个明白。
+  // 放最前面，不建库、不起监听，纯读。
+  const argv = process.argv.slice(1);
+  if (argv.includes('--port-status')) {
+    console.log(`当前面板端口: ${config.panel.port}`);
+    console.log(`配置文件: ${CONFIG_FILE}`);
+    for (const line of portReport(config.panel.port)) console.log(line);
+    const alt = await findFreePort(config.panel.port + 1, 5, PANEL_BIND);
+    if (alt) console.log(`\n要换端口：改 config.yaml 的 panel.port，例如 ${alt}。`);
+    return;
+  }
+  // --free-port：把「是否结束占用者」的询问预设成 y，然后照常启动；适合写进快捷方式
+  if (argv.includes('--free-port')) process.env.AWARELAB_PORT_FREE = '1';
+
+  // Windows 保留段（Hyper-V / WSL / Docker）里的端口，netstat 往往显示成 System（PID 4）在听，
+  // 任务管理器里根本清不掉，询问「是否结束」也没意义。这种先换端口，别让用户一遍遍去杀进程。
+  const reserved = reservedRangeOf(config.panel.port);
+  if (reserved) {
+    const alt = await findFreePort(config.panel.port + 1, 50, PANEL_BIND);
+    if (alt) {
+      console.error(`\n端口 ${config.panel.port} 落在 Windows 保留段 ${reserved.start}-${reserved.end} 里（Hyper-V / WSL / Docker 预留）。`);
+      console.error(`这个段里的端口任何程序都监听不了，已自动改用 ${alt} 并写回 config.yaml。`);
+      config.panel.port = alt;
+      try {
+        persistConfigValue('panel', 'port', alt);
+      } catch (writeError) {
+        console.error(`端口没写回配置（${writeError.message}），下次启动可能又用回被保留的那个。`);
+      }
+    } else {
+      console.error(`\n端口 ${config.panel.port} 落在 Windows 保留段 ${reserved.start}-${reserved.end} 里，且往后 50 个端口都不可用。`);
+      console.error('请改 config.yaml 的 panel.port，或调整系统保留段（netsh int ipv4 set dynamicport）。');
+      process.exit(1);
+    }
+  }
+
   const portFree = await ensurePortFree(config.panel.port, PANEL_BIND);
   if (!portFree) {
     console.error(`\n启动中止：端口 ${config.panel.port} 仍被占用。`);
@@ -98,7 +133,7 @@ async function boot() {
   // 主端口监听。回调里每行都可能被日志采集，只报边界不报凭据。
   // 清理定时器句柄放模块作用域：由 listen 回调注册、shutdown() 注销，两处不在同一函数。
   let maintenanceHandle = { stop: () => {}, started: false, reason: '尚未启动' };
-  server = app.listen(config.panel.port, PANEL_BIND, () => {
+  function onListening() {
     console.log(BANNER);
     console.log('本工具仅可用于授权范围内的安全意识演练。');
     // 数据库驱动来源：环境不对时先看这一行
@@ -145,25 +180,57 @@ async function boot() {
     } else {
       console.log(`数据保留期清理未启用：${maintenance.reason}（演练数据与采集到的口令会一直留存）`);
     }
-  });
+  }
 
-  // 端口被占是 exe 用户最常见的启动失败：双击第二次、或上次的窗口没关干净。给一句人话并留住窗口，
-  // 不然控制台一闪而过，用户只看到"打不开"。源码部署仍按原样退出，保持 systemd/容器里快速失败。
-  server.on('error', (error) => {
-    if (error.code !== 'EADDRINUSE') throw error;
-    console.error(`\n端口 ${config.panel.port} 已被占用：可能在体检之后又被别的进程抢走了。`);
-    // 体检已做过一次；这里是竞态兜底，仍然把占用者查出来，避免只给一句「被占用」
-    for (const line of portOwnerLines(config.panel.port)) console.error(line);
-    console.error('处理办法：结束上面那个进程，或改 config.yaml 的 panel.port。');
-    if (process.env.AWARELAB_SEA === '1' && process.stdin.isTTY) {
-      console.error('\n这个窗口先留着，按 Ctrl+C 或直接关闭即可退出。');
-      // 不用 process.stdin.resume()：双击启动时有控制台 stdin 能挂住，但被计划任务/服务方式拉起时
-      // stdin 可能是 NUL，resume 之后事件循环仍然空转退出，窗口一闪而过。定时器最稳。
-      setInterval(() => {}, 1 << 30);
-      return;
-    }
-    process.exit(1);
-  });
+  /**
+   * 起监听；失败且「没有任何监听进程」时自动换端口。
+   *
+   * 为什么要这一步：Windows 上 7778 可能落在 Hyper-V / WSL / Docker 的保留段里——
+   * netstat 看不到任何进程，任务管理器也清不出东西，但 bind 就是失败。用户看到的现象是
+   * 「每次打开都说占用，清了还是占用」。这种情况下换端口是唯一可行的自愈，所以直接换。
+   * 有真实占用者时不换：那是操作员自己开着的进程，杀掉/换端口应当由他自己决定。
+   */
+  function attemptListen(port, allowFallback) {
+    const instance = app.listen(port, PANEL_BIND, onListening);
+    instance.on('error', async (error) => {
+      if (error.code !== 'EADDRINUSE' && error.code !== 'EACCES') throw error;
+      const ownerPid = findListenerPid(port);
+      if (!ownerPid && allowFallback) {
+        const alt = await findFreePort(port + 1, 20, PANEL_BIND);
+        if (alt) {
+          const range = reservedRangeOf(port);
+          console.error(`\n端口 ${port} 无法监听，但没有找到任何监听进程。`);
+          if (range) console.error(`原因: 它落在 Windows 保留段 ${range.start}-${range.end}（Hyper-V / WSL / Docker 预留）。`);
+          console.error(`已自动改用端口 ${alt}，并写回 config.yaml，下次启动直接用它。`);
+          config.panel.port = alt;
+          try {
+            persistConfigValue('panel', 'port', alt);
+          } catch (writeError) {
+            console.error(`端口没写回配置（${writeError.message}），下次启动可能又用回 ${port}。`);
+          }
+          server = attemptListen(alt, false);
+          return;
+        }
+        console.error(`\n端口 ${port} 无法监听，往后的 20 个端口也不可用。请改 config.yaml 的 panel.port。`);
+      } else {
+        console.error(`\n端口 ${port} 已被占用：可能在体检之后又被别的进程抢走了。`);
+        // 体检已做过一次；这里是竞态兜底，仍然把占用者查出来，避免只给一句「被占用」
+        for (const line of portOwnerLines(port)) console.error(line);
+        console.error('处理办法：结束上面那个进程，或改 config.yaml 的 panel.port。');
+      }
+      if (process.env.AWARELAB_SEA === '1' && process.stdin.isTTY) {
+        console.error('\n这个窗口先留着，按 Ctrl+C 或直接关闭即可退出。');
+        // 不用 process.stdin.resume()：双击启动时有控制台 stdin 能挂住，但被计划任务/服务方式拉起时
+        // stdin 可能是 NUL，resume 之后事件循环仍然空转退出，窗口一闪而过。定时器最稳。
+        setInterval(() => {}, 1 << 30);
+        return;
+      }
+      process.exit(1);
+    });
+    return instance;
+  }
+
+  server = attemptListen(config.panel.port, true);
 
   // 退出前先收掉采集面监听：残留端口会让下一次启动直接报冲突
   /**

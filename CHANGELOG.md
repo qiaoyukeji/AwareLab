@@ -4,6 +4,26 @@
 [语义化版本](https://semver.org/lang/zh-CN/)。版本号以 `server/package.json` 与
 `web/package.json` 的 `version` 为准，两者始终保持一致。
 
+## [2.2.1] - 2026-11-06
+
+修「每次打开都说端口被占用、任务管理器里又清不掉」这一类死循环。
+
+### 修复
+
+- **Windows 保留段被当成"被别人占着"**：Hyper-V / WSL / Docker 预留的端口在 `netstat` 里常显示成
+  `System（PID 4）`，杀不掉也清不干净。启动前先用 `netsh ... show excludedportrange` 识别，
+  命中就自动换到后面的可用端口、写回 `config.yaml`，并打印原保留段范围。
+- **中文路径乱码**：`Get-CimInstance` 的输出按 GBK 落到 stdout，Node 按 UTF-8 解码显示成一片 `����`；
+  已在 PowerShell 侧强制 `[Console]::OutputEncoding = UTF8`。
+- **lint 扫到实测数据目录**：`.pc2/`、`.verify-*/` 里解包出来的前端产物会被当成源码报上千条问题，
+  已统一忽略点目录。
+
+### 新增
+
+- `AwareLab.exe --port-status`：只读诊断，打印当前端口、占用者（进程名/PID/路径/命令行）或保留段，
+  并给出一个可用替代端口。
+- `AwareLab.exe --free-port`：对「是否结束占用进程」自动回答 `y` 后启动，适合写进快捷方式。
+
 ## [2.2.0] - 2026-11-06
 
 端口被占时不再只说「被占用」：启动前主动体检，把占用者查清楚，并能当场结束它。
