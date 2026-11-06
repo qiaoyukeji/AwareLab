@@ -13,6 +13,15 @@
       <el-button size="small" :loading="seeding" @click="reseed">补齐内置素材</el-button>
     </div>
 
+    <!-- 复制时顺手换品牌：品牌名与主色都是一次性替换，只影响新复制出来的副本，内置原件不动 -->
+    <div class="lib-bar lib-tune">
+      <span class="lib-tune-label">复制时替换品牌</span>
+      <el-input v-model="brand" size="small" class="lib-brand" maxlength="24" clearable
+        placeholder="留空保留「远山科技」" />
+      <el-color-picker v-model="accent" size="small" :predefine="PRESETS" title="主色（留空用模板原色）" />
+      <span class="lab-hint lib-tune-tip">替换后仍可逐字改 HTML</span>
+    </div>
+
     <p class="lab-hint lib-note">
       以下模板随平台内置，点「使用」会复制一份到「假登录页 / 邮件文案 / 教学页」，之后可自由改 HTML 与字段；
       内置原件不会被改动，随时可以再复制一份。
@@ -39,9 +48,13 @@
       </article>
     </div>
 
-    <!-- 预览弹窗：整页原样展示，邮件模板也能看到 600px 版心与按钮 -->
+    <!-- 预览弹窗：整页原样展示，邮件模板也能看到 600px 版心与按钮；底部列出"可改点"-->
     <el-dialog v-model="previewOpen" :title="preview?.name || '模板预览'" width="760px" append-to-body>
       <iframe v-if="preview" :srcdoc="preview.html" sandbox="" class="lib-frame" title="模板预览" />
+      <div v-if="preview?.customize?.length" class="lib-points">
+        <span class="lib-points-label">复制后可改</span>
+        <el-tag v-for="point in preview.customize" :key="point" size="small" effect="plain" round>{{ point }}</el-tag>
+      </div>
       <template #footer>
         <el-button @click="previewOpen = false">关闭</el-button>
         <el-button type="primary" :loading="usingKey === preview?.key" @click="preview && use(preview)">使用此模板</el-button>
@@ -70,6 +83,10 @@ const pages = ref([]);
 const mails = ref([]);
 const lessons = ref([]);
 const preview = ref(null);
+// 复制时替换的品牌与本单位主色；都留空就是"原样复制"，和以前的行为一致
+const brand = ref('');
+const accent = ref('');
+const PRESETS = ['#2563eb', '#0f766e', '#4f46e5', '#dc2626', '#ea580c', '#0891b2', '#7c3aed', '#475569'];
 
 const TYPE_LABEL = { login: '登录页', verify: '验证页', notice: '通知页' };
 
@@ -115,12 +132,17 @@ async function load() {
 
 /**
  * 复制内置模板。成功后通知父级切到对应标签并强制重挂载，否则 KeepAlive 里的列表还是旧的，会让人以为没复制上。
+ * brand/accent 只在填了的时候才发，服务端按"没填就不动"处理。
  */
 async function use(item) {
   usingKey.value = item.key;
   try {
-    const res = await http.post('/library/use', { kind: item.kind, key: item.key });
-    ElMessage.success(`已复制「${res?.name || item.name}」，已切到对应标签，可直接编辑`);
+    const payload = { kind: item.kind, key: item.key };
+    if (brand.value.trim()) payload.brand = brand.value.trim();
+    if (accent.value) payload.accent = accent.value;
+    const res = await http.post('/library/use', payload);
+    const swapped = payload.brand || payload.accent ? '，品牌与配色已替换' : '';
+    ElMessage.success(`已复制「${res?.name || item.name}」${swapped}，已切到对应标签，可直接编辑`);
     item.clones = (item.clones || 0) + 1;
     preview.value = null;
     emit('used', item.kind);
@@ -151,6 +173,13 @@ onMounted(load);
 <style scoped>
 .lib-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 12px 14px 0; }
 .lib-search { width: 240px; margin-left: auto; }
+/* 第二行是"复制时替换品牌"，比卡片操作区更靠上：它作用于下面所有卡片，不是某一张的设置 */
+.lib-tune { padding-top: 8px; gap: 8px; }
+.lib-tune-label { font-size: 12px; color: var(--lab-ink-3); }
+.lib-brand { width: 200px; }
+.lib-tune-tip { margin-left: 2px; }
+.lib-points { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.lib-points-label { font-size: 12px; color: var(--lab-ink-3); margin-right: 2px; }
 .lib-note { margin: 10px 14px 0; }
 .lib-grid {
   display: grid;

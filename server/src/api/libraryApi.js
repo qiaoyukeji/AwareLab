@@ -11,6 +11,7 @@ import { get, insert, nowIso } from '../platform/storage/rows.js';
 import { ok, badRequest, notFound } from '../platform/net/envelope.js';
 import { inspectTemplate } from '../capture/diagnostics.js';
 import { PAGE_TEMPLATES, MAIL_TEMPLATES, LEARN_PAGES, PAGE_TYPES } from '../library/builtinTemplates.js';
+import { applyBranding, editablePoints, templateAccent } from '../library/branding.js';
 import { restoreBuiltin, seedBuiltins } from '../library/seed.js';
 
 export const libraryApi = express.Router();
@@ -40,8 +41,9 @@ function diagnoseColumns(report) {
 }
 
 /**
- * 目录：一次给全（9 个页面 + 8 封邮件 + 4 个学习页，正文合计约 100KB）。
- * 不在这里分页：卡片墙要一次画完，逐条拉正文会让首屏闪 17 次。
+ * 目录：一次给全（21 个页面 + 18 封邮件 + 6 个学习页，正文合计约 200KB）。
+ * 不在这里分页：卡片墙要一次画完，逐条拉正文会让首屏闪几十次。
+ * customize 是"复制之后该改哪几处"的提示，前端弹窗里原样列出来，省得对着 HTML 找品牌名。
  */
 libraryApi.get('/library', (_req, res) => {
   ok(res, {
@@ -52,6 +54,8 @@ libraryApi.get('/library', (_req, res) => {
       type: item.type,
       description: item.description,
       html: item.html,
+      accent: templateAccent(item.html),
+      customize: editablePoints('page', item.html),
       response_content: item.response_content,
       template_id: installedId('web_templates', item.key),
       clones: cloneCount('web_templates', item.name),
@@ -63,6 +67,8 @@ libraryApi.get('/library', (_req, res) => {
       subject: item.subject,
       description: item.description,
       body_html: item.body_html,
+      accent: templateAccent(item.body_html),
+      customize: editablePoints('mail', item.body_html),
       template_id: installedId('mail_templates', item.key),
       clones: cloneCount('mail_templates', item.name),
     })),
@@ -70,6 +76,7 @@ libraryApi.get('/library', (_req, res) => {
       key: item.key,
       name: item.name,
       html: item.html,
+      customize: editablePoints('lesson', item.html),
       template_id: installedId('learn_pages', item.key),
       clones: cloneCount('learn_pages', item.name),
     })),
@@ -84,22 +91,26 @@ libraryApi.post('/library/seed', (_req, res) => {
 /**
  * 复制内置素材成可编辑副本：内置条目本身不允许改名改正文（下次恢复会盖掉），
  * 想定制就复制一份，副本不带 builtin_key，普通增删改查都能用。
+ *
+ * brand / accent 是复制顺带做的品牌替换：品牌名会全文替换（含左上角单字标识），主色替换
+ * 模板自己的那一个颜色。只影响这一次新落库的副本，内置原件不动，随时可以再复制一份别的牌子。
  */
 libraryApi.post('/library/use', (req, res) => {
-  const { kind, key, name } = req.body || {};
+  const { kind, key, name, brand, accent } = req.body || {};
   if (!kind || !key) return badRequest(res, '缺少素材类型或标识');
   const now = nowIso();
 
   if (kind === 'page') {
     const source = PAGE_TEMPLATES.find((item) => item.key === key);
     if (!source) return notFound(res, '内置页面不存在');
-    const report = inspectTemplate(source.html);
+    const html = applyBranding(source.html, { brand, accent });
+    const report = inspectTemplate(html);
     const row = {
       id: crypto.randomUUID(),
       name: name || `${source.name}（副本）`,
       type: source.type,
       description: source.description,
-      html: source.html,
+      html,
       response_type: 'alert',
       response_content: source.response_content,
       learn_page_id: 'bt-lesson-identify',
@@ -119,7 +130,7 @@ libraryApi.post('/library/use', (req, res) => {
       id: crypto.randomUUID(),
       name: name || `${source.name}（副本）`,
       subject: source.subject,
-      body_html: source.body_html,
+      body_html: applyBranding(source.body_html, { brand, accent }),
       description: source.description,
       created_at: now,
       updated_at: now,
@@ -132,7 +143,13 @@ libraryApi.post('/library/use', (req, res) => {
   if (kind === 'lesson') {
     const source = LEARN_PAGES.find((item) => item.key === key);
     if (!source) return notFound(res, '内置学习页不存在');
-    const row = { id: crypto.randomUUID(), name: name || `${source.name}（副本）`, html: source.html, created_at: now, builtin_key: null };
+    const row = {
+      id: crypto.randomUUID(),
+      name: name || `${source.name}（副本）`,
+      html: applyBranding(source.html, { brand, accent }),
+      created_at: now,
+      builtin_key: null,
+    };
     insert('learn_pages', row);
     return ok(res, { ...row, kind: 'lesson' });
   }

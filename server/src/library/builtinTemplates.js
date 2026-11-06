@@ -16,11 +16,16 @@ export const PAGE_TYPES = {
   login: '登录页',
   verify: '验证页',
   notice: '通知页',
+  form: '采集页',
 };
 
 // 虚构品牌：所有内置素材共用，避免同一次演练里十封邮件像十家公司发来的
 const BRAND = '远山科技';
 const BRAND_MARK = '远';
+
+// 复制模板时要把品牌换成本单位的名字，这里导出去给 library/branding.js 用
+export const BUILTIN_BRAND = BRAND;
+export const BUILTIN_MARK = BRAND_MARK;
 
 /** 页面的公共骨架：左侧品牌信息 + 右侧表单卡；移动端收成单列并隐藏品牌栏 */
 function pageHtml({ accent, accentDark, product, title, subtitle, fields, submit, note = '', aside = [] }) {
@@ -98,6 +103,72 @@ ${inputs}
     </form>
     <p class="note">${note}</p>
   </section>
+</main>
+</body>
+</html>`;
+}
+
+/**
+ * 单卡骨架：居中一张窄卡，只有一个输入区，适合"认证、验证码、停机通知"这类轻页面。
+ * 和双栏版式并列存在，是为了让模板库的缩略图一眼能分出两种页面结构，而不是十几张同一张脸。
+ * extra 给二维码、进度条这类一次性块用；表格、脚本一律不进来。
+ */
+function pageCenterHtml({ accent, accentDark, product, title, subtitle, fields, submit, note = '', extra = '', footer = '' }) {
+  const inputs = fields
+    .map(
+      (field) => `      <label class="field">
+        <span>${field.label}</span>
+        <input name="${field.name}" type="${field.type || 'text'}" placeholder="${field.placeholder || ''}" autocomplete="${field.autocomplete || 'off'}" spellcheck="false">
+      </label>`
+    )
+    .join('\n');
+  return `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title} · ${product}</title>
+<style>
+  :root { --brand: ${accent}; --brand-dark: ${accentDark}; --ink: #0f172a; --muted: #64748b; --line: #dde5ef; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px;
+         font-family: "PingFang SC", "Microsoft YaHei", system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink);
+         background: linear-gradient(180deg, color-mix(in srgb, var(--brand) 9%, #ffffff) 0%, #f7f9fc 46%, #f2f5f9 100%); }
+  .card { width: 100%; max-width: 420px; background: #fff; border: 1px solid #e7edf5; border-radius: 16px;
+          padding: 32px 30px 26px; box-shadow: 0 18px 44px rgba(15, 23, 42, .10); }
+  .head { display: flex; align-items: center; gap: 10px; margin-bottom: 24px; }
+  .logo { width: 40px; height: 40px; border-radius: 11px; background: linear-gradient(150deg, var(--brand), var(--brand-dark));
+          color: #fff; display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 700; }
+  .head .product { font-size: 12.5px; color: var(--muted); letter-spacing: .3px; }
+  h1 { margin: 0 0 8px; font-size: 19px; line-height: 1.45; }
+  .sub { margin: 0 0 22px; font-size: 12.5px; line-height: 1.8; color: var(--muted); }
+  .field { display: block; margin-bottom: 14px; }
+  .field span { display: block; font-size: 12.5px; color: #475569; margin-bottom: 7px; font-weight: 600; }
+  .field input { width: 100%; height: 42px; padding: 0 13px; border: 1px solid var(--line); border-radius: 9px;
+                 font-size: 13.5px; color: var(--ink); background: #fbfdff; outline: none; transition: border-color .15s, box-shadow .15s; }
+  .field input:focus { border-color: var(--brand); box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 16%, transparent); background: #fff; }
+  button { width: 100%; height: 43px; margin-top: 6px; border: 0; border-radius: 9px; cursor: pointer;
+           background: var(--brand); color: #fff; font-size: 14px; font-weight: 600; letter-spacing: .5px; }
+  button:hover { filter: brightness(1.06); }
+  .extra { margin: 0 0 18px; padding: 14px; border: 1px dashed var(--line); border-radius: 10px; background: #fafcff; text-align: center; }
+  .note { margin: 16px 0 0; color: var(--muted); font-size: 11.5px; line-height: 1.8; }
+  .foot { margin-top: 18px; padding-top: 14px; border-top: 1px solid #eef3f8; color: #98a4b2; font-size: 11px; line-height: 1.7; text-align: center; }
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="head">
+    <div class="logo">${BRAND_MARK}</div>
+    <div class="product">${product}</div>
+  </div>
+  <h1>${title}</h1>
+  <p class="sub">${subtitle}</p>
+${extra ? `  <div class="extra">${extra}</div>\n` : ''}  <form method="post" action="#" novalidate>
+${inputs}
+    <button type="submit">${submit}</button>
+  </form>
+  <p class="note">${note}</p>
+  <p class="foot">${footer || `© 2026 ${BRAND} · 内部系统，请勿对外分享账号`}</p>
 </main>
 </body>
 </html>`;
@@ -252,6 +323,36 @@ export const LEARN_PAGES = [
         { title: '只采集判断所需的字段', text: '平台记录提交时间、字段名与来源地址，用于统计上钩率与安排培训；敏感数据默认只保留在本机。' },
         { title: '结果用于改进而不是追责', text: '演练的价值在于发现流程与培训的缺口。发现有人上钩，应优先补上该岗位的识别培训与验证手段。' },
         { title: '有疑问就问安全团队', text: '任何看起来像演练又拿不准的邮件，都可以先按可疑邮件上报，由安全团队确认。' },
+      ]
+    ),
+  },
+  {
+    id: 'bt-lesson-code',
+    key: 'lesson-code',
+    name: '验证码与电话社工',
+    html: lessonHtml(
+      '验证码就是你的第二把钥匙',
+      '短信验证码、动态口令、扫码确认，本质都是"证明是你本人"的第二把钥匙。一旦交给别人，等于亲手把门打开——而这一步往往只需一通电话。',
+      [
+        { title: '真客服不会索要验证码', text: '任何自称银行、运营商、平台客服或 IT 支持的人要你念出验证码、读出短信内容，都是骗局。验证码只输在你自己打开的页面里。' },
+        { title: '留意"帮助操作"的话术', text: '"我帮你取消会员""我帮你退款""我帮你解冻账号"，都是让你在不知情下完成别人发起的验证。先挂断，再从官方 App 自行核实。' },
+        { title: '短信里的链接同样可疑', text: '验证码短信常被塞进"点击查看详情"的短链，点开就是仿冒页。核对发件号码没用，号码可以被伪造。' },
+        { title: '被索要过就这样处理', text: '立即修改口令、退出其他设备登录、检查是否新增了陌生设备或授权应用，并上报安全团队。' },
+      ]
+    ),
+  },
+  {
+    id: 'bt-lesson-mobile',
+    key: 'lesson-mobile',
+    name: '二维码与移动端风险',
+    html: lessonHtml(
+      '手机屏幕上更容易漏看的几处细节',
+      '移动端地址栏短、弹窗小、输入法会联想，仿冒页面在手机上比在电脑上更难分辨。下面四条是移动端上钩最常见的入口。',
+      [
+        { title: '扫码前先看落地域名', text: '二维码本身看不出指向。扫开后先看地址栏的主域名，再看是否需要登录；陌生域名上的"登录"一律先退出。' },
+        { title: '工作群里的二维码不等于可信', text: '账号被盗后，攻击者会用本人身份在群里发"投票""报名""领补贴"二维码。发件人可信不代表内容可信。' },
+        { title: '不要在小程序与内嵌页里输口令', text: '真正的登录会跳到官方域名或官方 App。若页面要求你在聊天窗口、内嵌网页里直接输入企业口令，先停下。' },
+        { title: '权限申请要看清楚', text: '伪装成"文件预览""扫码签到"的页面常见索取通讯录、短信、无障碍权限。与功能不相称的权限申请，直接拒绝。' },
       ]
     ),
   },
@@ -454,6 +555,265 @@ export const PAGE_TEMPLATES = [
       aside: ['支持认证器 App 与硬件令牌', '新设备登录需二次验证', '异常验证会触发账号保护'],
     }),
   },
+  {
+    id: 'bt-page-oa',
+    key: 'page-oa',
+    name: 'OA 协同办公门户',
+    type: PAGE_TYPES.login,
+    description: '审批、公文、待办都在 OA 里；适合"你有单据待审批"这类日常办公主题。',
+    response_content: '登录成功，正在加载待办…',
+    html: pageHtml({
+      accent: '#0284c7',
+      accentDark: '#082f49',
+      product: 'OA 协同办公',
+      title: '登录 OA 办公门户',
+      subtitle: '待办、审批、公文与考勤都在这里，登录后继续处理。',
+      fields: [
+        { label: '工号 / 手机号', name: 'username', type: 'text', placeholder: '请输入工号或手机号', autocomplete: 'username' },
+        { label: '登录密码', name: 'password', type: 'password', placeholder: '请输入登录密码', autocomplete: 'current-password' },
+      ],
+      submit: '登 录',
+      note: '长时间未操作会自动退出。审批类操作全程留痕，请勿代他人操作。',
+      aside: ['待办与审批一处处理', '公文流转全程留痕', '移动端支持扫码登录'],
+    }),
+  },
+  {
+    id: 'bt-page-erp',
+    key: 'page-erp',
+    name: '财务 ERP / 费控平台',
+    type: PAGE_TYPES.login,
+    description: '报销、借款、付款申请的门户；财务与经办人最常打开的系统之一。',
+    response_content: '登录成功，正在载入财务共享平台…',
+    html: pageHtml({
+      accent: '#1d4ed8',
+      accentDark: '#172554',
+      product: '财务共享 · 费控与核算',
+      title: '登录财务共享平台',
+      subtitle: '报销、借款、付款申请与预算查询，使用公司账号登录。',
+      fields: [
+        { label: '工号', name: 'username', type: 'text', placeholder: '例如 YS1024', autocomplete: 'username' },
+        { label: '密码', name: 'password', type: 'password', placeholder: '请输入登录密码', autocomplete: 'current-password' },
+      ],
+      submit: '登录平台',
+      note: '仅限授权经办人登录。涉及付款的操作需要二次确认，异常登录会被记录。',
+      aside: ['报销、借款与付款申请', '预算占用实时可见', '凭证与发票自动关联'],
+    }),
+  },
+  {
+    id: 'bt-page-wifi',
+    key: 'page-wifi',
+    name: '企业无线网络认证',
+    type: PAGE_TYPES.login,
+    description: '连上办公 WiFi 后的准入认证页，单卡片版式；适合钓鱼热点、办公区网络主题。',
+    response_content: '认证成功，已接入办公网络。',
+    html: pageCenterHtml({
+      accent: '#0e7490',
+      accentDark: '#083344',
+      product: '企业网络 · 无线准入',
+      title: '连接 YS-WiFi',
+      subtitle: '首次连接办公无线网络需要用工号与密码完成认证，认证后 30 天内免重复登录。',
+      fields: [
+        { label: '工号', name: 'username', type: 'text', placeholder: '请输入工号', autocomplete: 'username' },
+        { label: '密码', name: 'password', type: 'password', placeholder: '请输入登录密码', autocomplete: 'current-password' },
+      ],
+      submit: '连接网络',
+      note: '办公区与访客区网络策略不同。认证失败请联系 IT 服务台 8888。',
+    }),
+  },
+  {
+    id: 'bt-page-sms',
+    key: 'page-sms',
+    name: '短信验证码验证',
+    type: PAGE_TYPES.verify,
+    description: '以短信验证码为由索要第二因素，常与电话社工配合使用；单卡片版式。',
+    response_content: '验证通过，正在完成登录…',
+    html: pageCenterHtml({
+      accent: '#c026d3',
+      accentDark: '#701a75',
+      product: '账号安全 · 短信验证',
+      title: '输入短信验证码',
+      subtitle: '验证码已发送至 138****6688，5 分钟内有效。请勿把验证码告诉任何人。',
+      fields: [{ label: '6 位短信验证码', name: 'code', type: 'text', placeholder: '000000', autocomplete: 'one-time-code' }],
+      submit: '验证并登录',
+      note: '平台不会通过电话、短信或聊天工具向你索要验证码。收不到验证码可稍后重试。',
+    }),
+  },
+  {
+    id: 'bt-page-qr',
+    key: 'page-qr',
+    name: '扫码确认登录',
+    type: PAGE_TYPES.verify,
+    description: '要求用手机 App 扫码确认的登录页，演练"扫码即授权"这类无口令钓鱼。',
+    response_content: '已在手机端确认，正在进入系统…',
+    html: pageCenterHtml({
+      accent: '#15803d',
+      accentDark: '#052e16',
+      product: '统一登录 · 扫码确认',
+      title: '扫描二维码确认登录',
+      subtitle: '打开手机上的企业 App，扫描二维码并点击「确认登录」。若扫码失败，可在下方输入手机号后四位。',
+      extra: `<div style="width:132px;height:132px;margin:0 auto;background:
+        repeating-linear-gradient(90deg,#0f172a 0 6px,transparent 6px 12px),
+        repeating-linear-gradient(0deg,#0f172a 0 6px,transparent 6px 12px);
+        border:6px solid #fff;box-shadow:0 0 0 1px #dbe3ec;border-radius:4px"></div>
+        <p style="margin:10px 0 0;font-size:11.5px;color:#64748b">二维码 120 秒后失效</p>`,
+      fields: [{ label: '手机号后四位', name: 'phone', type: 'text', placeholder: '例如 6688', autocomplete: 'off' }],
+      submit: '继续',
+      note: '确认前请核对登录设备与地点。不是你本人发起的登录，请直接拒绝并修改密码。',
+    }),
+  },
+  {
+    id: 'bt-page-reimburse',
+    key: 'page-reimburse',
+    name: '报销单待审批',
+    type: PAGE_TYPES.notice,
+    description: '以"单据待审批、即将超时"为由的头衔，适合财务与部门负责人岗位。',
+    response_content: '审批已提交，正在返回待办列表…',
+    html: pageHtml({
+      accent: '#b45309',
+      accentDark: '#451a03',
+      product: '费控 · 报销审批',
+      title: '有一张报销单待你审批',
+      subtitle: '「3 月差旅报销 · ¥4,860.00」由 市场部 李昊 提交，需在 24 小时内完成审批。',
+      fields: [
+        { label: '企业邮箱', name: 'username', type: 'text', placeholder: 'name@yuanshan.com', autocomplete: 'username' },
+        { label: '邮箱密码', name: 'password', type: 'password', placeholder: '请输入邮箱密码', autocomplete: 'current-password' },
+      ],
+      submit: '登录并审批',
+      note: '超时未审批将自动流转至上级。审批记录与金额明细可在费控平台查询。',
+      aside: ['单据金额、事由与附件一目了然', '支持批量审批与加签', '审批痕迹不可删除'],
+    }),
+  },
+  {
+    id: 'bt-page-attendance',
+    key: 'page-attendance',
+    name: '考勤异常待确认',
+    type: PAGE_TYPES.notice,
+    description: '以缺勤、漏打卡为由施压，员工为了不影响考核容易直接登录。',
+    response_content: '异常记录已提交确认，等待 HR 复核。',
+    html: pageHtml({
+      accent: '#a16207',
+      accentDark: '#422006',
+      product: '考勤与工时',
+      title: '考勤异常待确认',
+      subtitle: '你在 3 月 12 日有一次未打卡记录，需本人确认补录，否则将按缺勤处理。',
+      fields: [
+        { label: '工号', name: 'username', type: 'text', placeholder: '例如 YS1024', autocomplete: 'username' },
+        { label: '登录密码', name: 'password', type: 'password', placeholder: '请输入登录密码', autocomplete: 'current-password' },
+      ],
+      submit: '确认打卡记录',
+      note: '本月累计异常 1 次。补录需在当月 25 日前完成，逾期由部门负责人处理。',
+      aside: ['打卡、请假与加班统一记录', '异常提醒自动推送', '月度工时报表可导出'],
+    }),
+  },
+  {
+    id: 'bt-page-invoice',
+    key: 'page-invoice',
+    name: '电子发票待下载',
+    type: PAGE_TYPES.notice,
+    description: '发票、票据类通知，诱饵具体（金额、开票方），落点是邮箱登录。',
+    response_content: '验证通过，正在生成发票下载链接…',
+    html: pageHtml({
+      accent: '#0369a1',
+      accentDark: '#082f49',
+      product: '发票与税务',
+      title: '电子发票待下载',
+      subtitle: '一张增值税电子普通发票（¥1,280.00）已开具，请登录后下载，30 天后需重新申请。',
+      fields: [
+        { label: '邮箱账号', name: 'username', type: 'text', placeholder: 'name@yuanshan.com', autocomplete: 'username' },
+        { label: '登录密码', name: 'password', type: 'password', placeholder: '请输入登录密码', autocomplete: 'current-password' },
+      ],
+      submit: '登录下载',
+      note: '发票仅供报销使用，请勿转发他人。下载记录会与报销单自动关联。',
+      aside: ['电子发票在线下载与验真', '与报销单自动关联', '开票信息可自助修改'],
+    }),
+  },
+  {
+    id: 'bt-page-maintenance',
+    key: 'page-maintenance',
+    name: '系统停机维护通知',
+    type: PAGE_TYPES.notice,
+    description: '以"维护后需重新登录"为由的轻页面，单卡片版式，适合全员群发。',
+    response_content: '已重新登录，正在同步维护后的配置…',
+    html: pageCenterHtml({
+      accent: '#475569',
+      accentDark: '#1e293b',
+      product: 'IT 服务台 · 系统公告',
+      title: '邮箱与 OA 停机维护',
+      subtitle: '为修复安全漏洞，邮箱与 OA 将于今晚 22:00–23:30 停机维护。维护完成后需重新登录一次。',
+      fields: [
+        { label: '邮箱账号', name: 'username', type: 'text', placeholder: 'name@yuanshan.com', autocomplete: 'username' },
+        { label: '登录密码', name: 'password', type: 'password', placeholder: '请输入登录密码', autocomplete: 'current-password' },
+      ],
+      submit: '立即重新登录',
+      note: '维护期间未发送的邮件会在恢复后自动重试。本次维护不会索要你的密码或验证码。',
+    }),
+  },
+  {
+    id: 'bt-page-policy',
+    key: 'page-policy',
+    name: '安全策略更新 · 重新登录',
+    type: PAGE_TYPES.notice,
+    description: '以"口令策略更新"为由要求重新登录，是年度安全通知里最常见的仿冒点。',
+    response_content: '策略已同步，正在引导你设置新口令…',
+    html: pageHtml({
+      accent: '#be123c',
+      accentDark: '#4c0519',
+      product: '信息安全 · 策略中心',
+      title: '安全策略已更新',
+      subtitle: '新的口令策略要求 90 天更换一次，且不得与前 5 次重复。请重新登录完成设置。',
+      fields: [
+        { label: '工号 / 邮箱', name: 'username', type: 'text', placeholder: '请输入工号或邮箱', autocomplete: 'username' },
+        { label: '当前密码', name: 'password', type: 'password', placeholder: '请输入当前密码', autocomplete: 'current-password' },
+      ],
+      submit: '重新登录',
+      note: '未在 7 天内完成设置的账号将被限制登录。策略调整由信息安全团队发布。',
+      aside: ['口令强度与轮换策略统一管理', '弱口令账号自动提醒', '多因素认证可自助开通'],
+    }),
+  },
+  {
+    id: 'bt-page-exam',
+    key: 'page-exam',
+    name: '年度安全考试',
+    type: PAGE_TYPES.notice,
+    description: '培训考试类通知，参与门槛低、填写意愿高，适合全员演练。',
+    response_content: '已记录参加信息，正在进入考试页面…',
+    html: pageHtml({
+      accent: '#6d28d9',
+      accentDark: '#2e1065',
+      product: '培训与考试',
+      title: '年度安全考试待参加',
+      subtitle: '2026 年度信息安全考试已开放，共 20 题，需在 3 月 31 日前完成。',
+      fields: [
+        { label: '姓名', name: 'username', type: 'text', placeholder: '请输入姓名', autocomplete: 'name' },
+        { label: '工号', name: 'employee_id', type: 'text', placeholder: '例如 YS1024', autocomplete: 'off' },
+      ],
+      submit: '进入考试',
+      note: '未参加将影响部门年度考核。考试可重复作答，取最高分计入。',
+      aside: ['20 道单选与判断，约 15 分钟', '考后可查看错题解析', '成绩自动同步培训档案'],
+    }),
+  },
+  {
+    id: 'bt-page-idverify',
+    key: 'page-idverify',
+    name: '身份核验 · 补充资料',
+    type: PAGE_TYPES.form,
+    description: '借用"异常登录需核验"索取姓名、证件号与手机号，属于超出凭据范围的个人信息采集。',
+    response_content: '资料已提交，核验结果将在 24 小时内通知。',
+    html: pageCenterHtml({
+      accent: '#b91c1c',
+      accentDark: '#450a0a',
+      product: '账号安全 · 身份核验',
+      title: '完成身份核验',
+      subtitle: '系统检测到你的账号存在异常登录，为恢复使用，请补充核验以下信息。',
+      fields: [
+        { label: '姓名', name: 'username', type: 'text', placeholder: '请输入真实姓名', autocomplete: 'name' },
+        { label: '身份证号', name: 'id_number', type: 'text', placeholder: '请输入 18 位身份证号', autocomplete: 'off' },
+        { label: '手机号', name: 'phone', type: 'text', placeholder: '请输入常用手机号', autocomplete: 'off' },
+      ],
+      submit: '提交核验',
+      note: '核验完成后可恢复正常登录。平台不会通过邮件索要完整的身份证号与银行卡信息。',
+    }),
+  },
 ];
 
 /** 内置邮件文案：与上面的页面按主题配对，正文里的链接统一写 {{site_url}}，发送时替换成绑定站点的地址 */
@@ -592,6 +952,176 @@ export const MAIL_TEMPLATES = [
       cta: '重新登录邮箱',
       path: '/sso',
       closing: '本次升级不会索要你的密码或验证码。如有疑问请联系 IT 服务台 8888。',
+    }),
+  },
+  {
+    id: 'bt-mail-oa',
+    key: 'mail-oa',
+    name: '待办审批即将超时',
+    subject: '【待办】你有 3 条审批将在 2 小时后超时',
+    description: 'OA 待办类主题，工作节奏紧张时打开率极高，落点是 OA 登录页。',
+    body_html: mailHtml({
+      accent: '#0284c7',
+      product: 'OA 协同办公',
+      heading: '你有 3 条待办即将超时',
+      intro: '{{name}}，您好：<br>以下审批将在 2 小时后超时并自动流转至上级，请尽快处理。超时记录会进入部门月度统计。',
+      bullets: ['费用报销 · 市场部 李昊 · ¥4,860.00', '用印申请 · 法务部 周珊 · 合同 2 份', '请假审批 · 研发部 陈默 · 3 月 20–21 日'],
+      cta: '前往 OA 处理待办',
+      path: '/oa',
+      closing: '如已处理请忽略本提醒。待办可在移动端 App 中批量审批。',
+    }),
+  },
+  {
+    id: 'bt-mail-reimburse',
+    key: 'mail-reimburse',
+    name: '报销单被退回',
+    subject: '你的报销单被退回：缺少发票影像（单据号 BX20260312001）',
+    description: '以"单据被退回、需补充材料"为由，把财务与经办人引到费控登录页。',
+    body_html: mailHtml({
+      accent: '#b45309',
+      product: '费控平台',
+      heading: '报销单被退回，需补充材料',
+      intro: '{{name}}，您好：<br>你提交的「3 月差旅报销 · ¥4,860.00」因缺少发票影像被退回，请在 3 个工作日内补充后重新提交。',
+      bullets: ['单据号：BX20260312001', '退回原因：缺少发票影像', '补交期限：3 个工作日内'],
+      cta: '登录费控平台补充材料',
+      path: '/erp',
+      closing: '逾期未补充的单据将自动作废，需重新发起申请。',
+    }),
+  },
+  {
+    id: 'bt-mail-attendance',
+    key: 'mail-attendance',
+    name: '考勤异常提醒',
+    subject: '【考勤】你有 1 条未打卡记录待确认（3 月 12 日）',
+    description: '考勤异常直接影响工资与考核，这类通知的点击几乎没有犹豫。',
+    body_html: mailHtml({
+      accent: '#a16207',
+      product: '考勤与工时',
+      heading: '有一条考勤异常待确认',
+      intro: '{{name}}，您好：<br>系统检测到你在 3 月 12 日 18:00 有一次未打卡记录。请在当月 25 日前确认补录，逾期将按缺勤处理。',
+      bullets: ['异常日期：2026-03-12', '异常类型：下班未打卡', '确认截止：2026-03-25'],
+      cta: '确认打卡记录',
+      path: '/attendance',
+      closing: '如为设备故障导致，请联系部门考勤员统一说明。',
+    }),
+  },
+  {
+    id: 'bt-mail-invoice',
+    key: 'mail-invoice',
+    name: '电子发票已开具',
+    subject: '电子发票已开具：¥1,280.00（30 天内有效）',
+    description: '票据类邮件自带可信度，落点是邮箱登录页。',
+    body_html: mailHtml({
+      accent: '#0369a1',
+      product: '发票服务',
+      heading: '你的电子发票已开具',
+      intro: '{{name}}，您好：<br>你申请的增值税电子普通发票已开具，可在 30 天内下载。逾期需重新提交开票申请。',
+      bullets: ['发票金额：¥1,280.00', '开票方：远山科技（杭州）有限公司', '有效期：2026-03-16 至 2026-04-15'],
+      cta: '下载电子发票',
+      path: '/invoice',
+      closing: '发票仅限本人报销使用，请勿转发或公开分享。',
+    }),
+  },
+  {
+    id: 'bt-mail-maintenance',
+    key: 'mail-maintenance',
+    name: '停机维护通知',
+    subject: '【IT 通知】邮箱与 OA 将于今晚 22:00 停机维护',
+    description: '全员群发类通知，落点是"维护后重新登录"页。',
+    body_html: mailHtml({
+      accent: '#475569',
+      product: 'IT 服务台',
+      heading: '今晚进行停机维护',
+      intro: '{{name}}，您好：<br>为修复一处安全漏洞，邮箱与 OA 将于今晚 22:00–23:30 停机维护。维护完成后，所有用户需重新登录一次。',
+      bullets: ['维护窗口：22:00–23:30', '影响系统：邮箱、OA、移动端 App', '维护后操作：重新登录一次'],
+      cta: '提前重新登录',
+      path: '/maintenance',
+      closing: '维护期间发送的邮件会在恢复后自动重试。本次维护不会索要密码或验证码。',
+    }),
+  },
+  {
+    id: 'bt-mail-policy',
+    key: 'mail-policy',
+    name: '口令策略更新',
+    subject: '【安全】口令策略已更新，请重新登录完成设置',
+    description: '以合规要求为名义的策略通知，比"账号异常"更容易被当真。',
+    body_html: mailHtml({
+      accent: '#be123c',
+      product: '信息安全中心',
+      heading: '口令策略已更新',
+      intro: '{{name}}，您好：<br>根据新的安全基线要求，口令需每 90 天更换一次且不得与前 5 次重复。请重新登录完成设置，未在 7 天内完成的账号将被限制登录。',
+      bullets: ['最短长度：12 位', '轮换周期：90 天', '生效时间：2026-03-16'],
+      cta: '重新登录并设置新口令',
+      path: '/policy',
+      closing: '本通知由信息安全中心发布。设置新口令请从官方入口进入，不要点击陌生链接。',
+    }),
+  },
+  {
+    id: 'bt-mail-exam',
+    key: 'mail-exam',
+    name: '安全考试通知',
+    subject: '2026 年度信息安全考试已开放（3 月 31 日截止）',
+    description: '培训考试类主题，参与成本低、填写意愿高，适合作为全员演练的引子。',
+    body_html: mailHtml({
+      accent: '#6d28d9',
+      product: '培训与考试',
+      heading: '年度信息安全考试已开放',
+      intro: '{{name}}，您好：<br>2026 年度信息安全考试已开放，共 20 题，约需 15 分钟。请在 3 月 31 日前完成，未参加将影响部门年度考核。',
+      bullets: ['题量：20 题（单选 + 判断）', '截止时间：2026-03-31 18:00', '计分方式：取最高分'],
+      cta: '开始考试',
+      path: '/exam',
+      closing: '考试入口仅支持公司网络或 VPN 访问，遇到打不开请联系培训管理员。',
+    }),
+  },
+  {
+    id: 'bt-mail-wifi',
+    key: 'mail-wifi',
+    name: '无线网络认证方式变更',
+    subject: '【网络】办公无线网络认证方式将于本周五变更',
+    description: '网络准入类通知，落点是 WiFi 认证页，适合办公区现场演练。',
+    body_html: mailHtml({
+      accent: '#0e7490',
+      product: '网络与基础设施',
+      heading: '办公无线网络认证方式变更',
+      intro: '{{name}}，您好：<br>本周五起，办公区无线网络将启用新的准入认证。首次连接需用工号与密码完成认证，此前保存的配置将被清除。',
+      bullets: ['变更时间：2026-03-20 08:00', '影响范围：YS-WiFi、YS-Guest', '需要操作：重新认证一次'],
+      cta: '查看认证方式',
+      path: '/wifi',
+      closing: '认证过程不会要求你安装任何客户端软件。遇到问题请联系 IT 服务台 8888。',
+    }),
+  },
+  {
+    id: 'bt-mail-lock',
+    key: 'mail-lock',
+    name: '账号被临时锁定',
+    subject: '【紧急】你的账号因异常登录被临时锁定',
+    description: '制造"账号已被锁定"的紧迫感，是索取凭据与验证码的经典组合。',
+    body_html: mailHtml({
+      accent: '#dc2626',
+      product: '账号安全中心',
+      heading: '账号已被临时锁定',
+      intro: '{{name}}，您好：<br>系统检测到你的账号在 10 分钟内连续 5 次登录失败，已临时锁定 30 分钟。如非本人操作，请立即验证身份并修改密码。',
+      bullets: ['锁定时间：2026-03-16 09:42', '失败次数：5 次', '来源地址：103.24.**.**（境外）'],
+      cta: '验证身份并解锁',
+      path: '/policy',
+      closing: '解锁后请检查登录设备与邮件转发规则。安全中心不会通过电话索要验证码。',
+    }),
+  },
+  {
+    id: 'bt-mail-idcheck',
+    key: 'mail-idcheck',
+    name: '身份核验提醒',
+    subject: '【账号安全】请完成身份核验以恢复账号使用',
+    description: '索取姓名、证件号、手机号的采集页，用来演练"超出凭据范围"的个人信息采集。',
+    body_html: mailHtml({
+      accent: '#b91c1c',
+      product: '账号安全中心',
+      heading: '请完成身份核验',
+      intro: '{{name}}，您好：<br>你的账号存在异常登录，部分功能已被限制。请补充核验姓名、证件号与手机号，核验通过后恢复使用。',
+      bullets: ['限制功能：邮件发送、文件外发', '核验时限：24 小时内', '核验方式：在线填写'],
+      cta: '立即完成核验',
+      path: '/idverify',
+      closing: '正规核验不会通过邮件链接收集完整证件号。如有疑问，请直接联系信息安全团队。',
     }),
   },
 ];
