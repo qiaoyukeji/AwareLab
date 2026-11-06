@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 打包单文件 Windows 可执行程序（Node SEA）。
  *
  * 做法：esbuild 把 server/src/boot/seaEntry.js 连同依赖打成一个 CJS 文件，前端 web/dist 以
@@ -42,12 +42,21 @@ function walk(dir, base = dir, out = []) {
 
 function buildWeb() {
   const indexHtml = path.join(WEB_DIR, 'index.html');
+  if (process.argv.includes('--skip-web')) {
+    console.log('[1/6] 跳过 vite 构建，直接内联现有 web/dist');
+  } else {
+    console.log('[1/6] 构建前端（npm --prefix web run build）');
+    // 用 shell 跑是为了在 Windows 上也能找到 npm.cmd；cwd 换成仓库根，--prefix 才对得上
+    execFileSync('npm', ['--prefix', 'web', 'run', 'build'], {
+      cwd: REPO_DIR,
+      stdio: 'inherit',
+      shell: true,
+    });
+  }
   if (!fs.existsSync(indexHtml)) {
     console.error(`缺少前端产物：${indexHtml}\n先跑 npm --prefix web run build。`);
     process.exit(1);
   }
-  if (process.argv.includes('--skip-web')) console.log('[1/6] 跳过 vite 构建，直接内联现有 web/dist');
-  else console.log(`[1/6] 内联前端产物：${WEB_DIR}（如需更新先 npm --prefix web run build）`);
   const files = walk(WEB_DIR).filter((rel) => !rel.startsWith('.asset-version')).sort();
   const hash = crypto.createHash('sha256');
   const entries = [];
