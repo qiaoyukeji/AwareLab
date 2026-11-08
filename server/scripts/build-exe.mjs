@@ -32,8 +32,14 @@ const SEA_CONFIG = path.join(BUILD_DIR, 'sea-config.json');
 const BLOB = path.join(BUILD_DIR, 'sea-prep.blob');
 const SERVER_EXE = path.join(BUILD_DIR, 'AwareLabServer.exe');
 const INFO_EXE = path.join(BUILD_DIR, 'AwareLabInfo.exe');
+const BUILD_INFO = path.join(BUILD_DIR, 'BuildInfo.cs');
 const ICON = path.join(BUILD_DIR, 'awarelab.ico');
-const APP_EXE = path.join(OUT_DIR, 'AwareLab.exe');
+const PKG = JSON.parse(fs.readFileSync(path.join(SERVER_DIR, 'package.json'), 'utf8'));
+const VERSION = PKG.version;
+// 产物一律带版本号：AwareLab-2.5.0.exe、AwareLab-2.5.0-win-x64.zip
+const APP_EXE = path.join(OUT_DIR, `AwareLab-${VERSION}.exe`);
+const RELEASE_DIR = path.join(OUT_DIR, 'release');
+const ZIP_PATH = path.join(RELEASE_DIR, `AwareLab-${VERSION}-win-x64.zip`);
 const FUSE = 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2';
 
 function run(command, args, options = {}) {
@@ -129,17 +135,31 @@ function buildServerExe() {
   run(process.execPath, [postject, SERVER_EXE, 'NODE_SEA_BLOB', BLOB, '--sentinel-fuse', FUSE]);
 }
 
+/** 编译期常量：界面标题与启动信息里显示的版本号，来自 server/package.json。 */
+function writeBuildInfo() {
+  fs.mkdirSync(BUILD_DIR, { recursive: true });
+  fs.writeFileSync(
+    BUILD_INFO,
+    '// 由 scripts/build-exe.mjs 生成，勿手改。\r\n' +
+    'namespace AwareLab\r\n{\r\n    internal static class BuildInfo\r\n    {\r\n' +
+    `        public const string Version = "${VERSION}";\r\n` +
+    '    }\r\n}\r\n'
+  );
+}
 /** 控制台小程序：只打印启动信息，关掉它不影响主程序。 */
 function buildInfoExe() {
   console.log('[5/7] 编译启动信息小程序（AwareLabInfo.exe）');
   const csc = findCsc();
   if (!csc) throw new Error('找不到 csc.exe（.NET Framework），无法编译启动器');
-  run(csc, ['/nologo', '/target:exe', '/platform:x64', `/out:${INFO_EXE}`, path.join(LAUNCHER_DIR, 'InfoConsole.cs')]);
+  // 带同一个 manifest：DPI 感知一致，窗口坐标才是物理像素，摆位不会被系统再缩放一次
+  run(csc, ['/nologo', '/target:exe', '/platform:x64', `/out:${INFO_EXE}`,
+    `/win32manifest:${path.join(LAUNCHER_DIR, 'app.manifest')}`,
+    BUILD_INFO, path.join(LAUNCHER_DIR, 'InfoConsole.cs')]);
 }
 
 /** 桌面启动器：WinForms + WebView2，把服务端与运行库内嵌成单个 exe。 */
 function buildLauncher() {
-  console.log('[6/7] 编译桌面启动器并内嵌服务端（AwareLab.exe）');
+  console.log(`[6/7] 编译桌面启动器并内嵌服务端（${path.basename(APP_EXE)}）`);
   const csc = findCsc();
   for (const needed of ['Microsoft.Web.WebView2.Core.dll', 'Microsoft.Web.WebView2.WinForms.dll', 'WebView2Loader.dll']) {
     if (!fs.existsSync(path.join(LAUNCHER_LIB, needed))) {
@@ -168,6 +188,7 @@ function buildLauncher() {
     `/resource:${path.join(LAUNCHER_LIB, 'Microsoft.Web.WebView2.WinForms.dll')},Microsoft.Web.WebView2.WinForms.dll`,
     `/resource:${path.join(LAUNCHER_LIB, 'WebView2Loader.dll')},WebView2Loader.dll`,
     `/resource:${ICON},app.ico`,
+    BUILD_INFO,
     path.join(LAUNCHER_DIR, 'AwareLab.cs'),
     path.join(LAUNCHER_DIR, 'Shell.cs'),
   ];
@@ -176,7 +197,7 @@ function buildLauncher() {
 
 async function brand() {
   console.log('[7/7] 写图标与版本信息');
-  const pkg = JSON.parse(fs.readFileSync(path.join(SERVER_DIR, 'package.json'), 'utf8'));
+  const pkg = PKG;
   const meta = {
     icon: ICON,
     'file-version': pkg.version,
@@ -223,19 +244,67 @@ function report() {
   console.log('双击即用：自带窗口、任务栏显示 AwareLab 图标；数据写在 exe 同级的 AwareLab-data 目录。');
 }
 
+/** 发布包：dist/release/AwareLab-<版本>-win-x64.zip，压缩包与清单文件名都带版本号。 */
+function makeReleaseZip() {
+  if (process.argv.includes('--no-zip')) {
+    console.log('[打包] 跳过 zip（--no-zip）');
+    return;
+  }
+  console.log('[打包] 生成带版本号的发布 zip');
+  fs.mkdirSync(RELEASE_DIR, { recursive: true });
+  if (fs.existsSync(ZIP_PATH)) fs.rmSync(ZIP_PATH, { force: true });
+  const staging = path.join(RELEASE_DIR, `.staging-${VERSION}`);
+  fs.rmSync(staging, { recursive: true, force: true });
+  fs.mkdirSync(staging, { recursive: true });
+  fs.copyFileSync(APP_EXE, path.join(staging, path.basename(APP_EXE)));
+  fs.writeFileSync(
+    path.join(staging, '使用说明.txt'),
+    [
+      `AwareLab 安全意识演练平台 ${VERSION}`,
+      '',
+      `1. 双击 ${path.basename(APP_EXE)} 启动，任务栏出现 AwareLab 图标；`,
+      '2. 首次启动会在 exe 旁边建 AwareLab-data 目录，配置、库与演练数据都在里面；',
+      '3. 启动时的那个小控制台只打印管理地址、账号、口令与数据目录，关掉它不影响程序；',
+      '4. 要退出请关主窗口（会问你是最小化到托盘还是直接退出），或用托盘图标里的「退出」；',
+      '5. 整套数据搬走只需要拷整个 AwareLab-data 目录，先退出程序再拷。',
+      '',
+      '本工具仅可用于事先获得书面授权的安全意识演练；未经授权使用可能违法。',
+    ].join('\r\n')
+  );
+  execFileSync('powershell.exe', [
+    '-NoProfile',
+    '-Command',
+    `Compress-Archive -Path '${path.join(staging, '*')}' -DestinationPath '${ZIP_PATH}' -CompressionLevel Optimal`,
+  ], { stdio: 'inherit' });
+  fs.rmSync(staging, { recursive: true, force: true });
+
+  const sha = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  const lines = [
+    `${sha(APP_EXE)}  ${path.basename(APP_EXE)}`,
+    `${sha(ZIP_PATH)}  ${path.basename(ZIP_PATH)}`,
+  ];
+  const sumFile = path.join(RELEASE_DIR, `SHA256SUMS-${VERSION}.txt`);
+  fs.writeFileSync(sumFile, lines.join('\r\n') + '\r\n');
+  console.log(`[打包] ${ZIP_PATH}（${(fs.statSync(ZIP_PATH).size / 1024 / 1024).toFixed(1)} MB）`);
+  console.log(`[打包] 校验清单：${sumFile}`);
+}
+
 buildWeb();
 bundleServer();
 makeBlob();
 buildServerExe();
 if (process.argv.includes('--skip-launcher')) {
   console.log('[5/7] [6/7] 跳过启动器（--skip-launcher），只产出服务端 exe');
-  fs.copyFileSync(SERVER_EXE, path.join(OUT_DIR, 'AwareLabServer.exe'));
-  console.log(`[完成] ${path.join(OUT_DIR, 'AwareLabServer.exe')}`);
+  const standalone = path.join(OUT_DIR, `AwareLabServer-${VERSION}.exe`);
+  fs.copyFileSync(SERVER_EXE, standalone);
+  console.log(`[完成] ${standalone}`);
   process.exit(0);
 }
+writeBuildInfo();
 buildInfoExe();
 buildLauncher();
 await brand();
 report();
+makeReleaseZip();
 // 子进程（postject / rcedit）偶尔留个句柄让事件循环不退出，显式收尾
 process.exit(0);

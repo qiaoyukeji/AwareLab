@@ -10,7 +10,9 @@
 
 AwareLab 是一套装在自己电脑上、专门用来做**钓鱼邮件与钓鱼网站演练**的安全意识平台。拿到书面授权之后，安全团队用它做四件事：准备素材、挂起钓鱼网站、发出演练邮件、把"谁打开了、谁填了、填了什么"记录成可交付的上钩证据。
 
-它不是一个装在服务器上的 SaaS，而是一个**双击就打开的桌面程序**：界面在它自己的窗口里，不经过用户的浏览器。点开 `AwareLab.exe`，任务栏出现 AwareLab 的图标；同时会弹一个只有四行字的小控制台（地址、账号、口令、数据目录），**随手关掉它不影响程序运行**。关主窗口就是退出，数据留在 exe 旁边的 `AwareLab-data` 目录里，拷走整个文件夹就换了台机器继续。
+它不是一个装在服务器上的 SaaS，而是一个**双击就打开的桌面程序**：界面在它自己的窗口里，不经过用户的浏览器。点开 `AwareLab-2.5.1.exe`（文件名带版本号，换版本时一眼能看出手里是哪个），任务栏出现 AwareLab 的图标；同时会弹一个小的启动信息控制台（地址、账号、口令、数据目录），**随手关掉它不影响程序运行**。
+
+点主窗口右上角的 **×** 不会直接退出，而是先问一句：**最小化到托盘**（窗口收起来，站点和监听继续对目标开放），还是**直接退出**（停掉所有监听、结束服务端进程）。数据留在 exe 旁边的 `AwareLab-data` 目录里，拷走整个文件夹就换了台机器继续。
 
 > 这个工具的危险性在于"能仿真钓鱼"。所以平台把**演练授权**做成硬约束：没有处于生效窗口内的授权登记，建站监听和邮件发送一律拒绝；钓鱼网站只接受授权名单里的域名；邮件默认走沙箱，不会真的寄出去。
 
@@ -126,7 +128,7 @@ AwareLab 是一套装在自己电脑上、专门用来做**钓鱼邮件与钓鱼
 ### 进程装配
 
 ```
-AwareLab.exe（桌面启动器，C# WinForms + WebView2）
+AwareLab-2.5.1.exe（桌面启动器，C# WinForms + WebView2）
   ├─ 解包内嵌的 AwareLabServer.exe 与 WebView2 运行库到 %LOCALAPPDATA%\AwareLab\app\<版本>
   ├─ 无窗口拉起服务端，把 AWARELAB_HOME 指到 exe 同级的 AwareLab-data
   ├─ 解析服务端打印的「管理后台: http://127.0.0.1:端口/随机路径」
@@ -219,7 +221,10 @@ npm run build                # 产出 web/dist，由 server 直接托管
 ```bash
 cd server
 npm run build:exe
-# 产物：dist/AwareLab.exe（约 103MB）
+# 产物（文件名都带版本号，版本取自 server/package.json）：
+#   dist/AwareLab-2.5.1.exe                    约 103MB，双击即用
+#   dist/release/AwareLab-2.5.1-win-x64.zip    约 39MB，发给别人的那个包
+#   dist/release/SHA256SUMS-2.5.1.txt          exe 与 zip 的 sha256
 ```
 
 这条命令按顺序做七件事：
@@ -228,11 +233,11 @@ npm run build:exe
 2. esbuild 把 `server/src/boot/seaEntry.js` 连同依赖打成一份 CJS；
 3. 生 SEA blob；
 4. 复制一份 `node.exe` 并注入 blob，得到 `server/build/AwareLabServer.exe`；
-5. 编译控制台小程序 `AwareLabInfo.exe`（打印启动信息）；
-6. 用 csc 编译 `launcher/*.cs` 成 `dist/AwareLab.exe`，把服务端、WebView2 运行库、图标 **全部作为资源内嵌**；
-7. 用 rcedit 写图标与版本信息。
+5. 编译控制台小程序 `AwareLabInfo.exe`（打印启动信息）——版本号由构建脚本现生成 `BuildInfo.cs` 注入，不手写；
+6. 用 csc 编译 `launcher/*.cs` 成 `dist/AwareLab-<版本>.exe`，把服务端、WebView2 运行库、图标 **全部作为资源内嵌**；
+7. 用 rcedit 写图标与版本信息，再把 exe 和一份 `使用说明.txt` 压进 `dist/release/` 的 zip、算好 sha256。
 
-只要服务端、不要启动器时加 `--skip-launcher`，产出 `dist/AwareLabServer.exe`（老式的控制台程序，双击会开浏览器）。
+只要服务端、不要启动器时加 `--skip-launcher`，产出 `dist/AwareLabServer-<版本>.exe`（老式的控制台程序，双击会开浏览器）。`--no-zip` 跳过第 7 步的打包。
 
 ### 双击之后发生什么
 
@@ -240,7 +245,7 @@ npm run build:exe
 2. 在 exe 同级建 `AwareLab-data/`（目录不可写时退到 `%LOCALAPPDATA%\AwareLab`），首次运行生成 `config.yaml`、迁移数据库、写入内置素材；
 3. 无窗口拉起服务端，解析它打印的管理面地址；
 4. 弹出一个独立窗口显示后台，任务栏里是 AwareLab 图标；同时弹出一个小控制台，只打印**管理地址、账号、口令、数据目录**这几行；
-5. 关掉那个小控制台不影响程序；关掉主窗口（或托盘菜单里「退出」）就停服退出。
+5. 关掉那个小控制台不影响程序；点右上角 **×** 会问「最小化到托盘 / 直接退出 / 取消」，托盘菜单里也有「退出」。
 
 托盘菜单还有：打开窗口、重新加载、打开数据目录、复制后台地址、退出。窗口里 `Ctrl+R` 刷新。
 

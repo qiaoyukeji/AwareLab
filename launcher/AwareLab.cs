@@ -55,6 +55,10 @@ namespace AwareLab
 
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
+                // 界面线程上的异常不该让进程一声不响地消失：写进启动日志，用户来问时能查到
+                Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+                Application.ThreadException += (sender, e) => LogCrash("界面线程", e.Exception);
+                AppDomain.CurrentDomain.UnhandledException += (sender, e) => LogCrash("后台线程", e.ExceptionObject as Exception);
 
                 try
                 {
@@ -280,6 +284,35 @@ namespace AwareLab
             catch { }
         }
 
+        // 界面线程/后台线程没接住的异常写进启动日志，别让窗口一声不响地消失
+        internal static void LogCrash(string where, Exception error)
+        {
+            if (error == null) return;
+            try
+            {
+                var target = string.IsNullOrEmpty(LogFile)
+                    ? Path.Combine(Path.GetTempPath(), "awarelab-crash.txt")
+                    : LogFile;
+                File.AppendAllText(target,
+                    "===== " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + where + "异常 =====\r\n" +
+                    error + "\r\n", Encoding.UTF8);
+            }
+            catch { }
+        }
+
+        internal static void LogNote(string where, string text)
+        {
+            try
+            {
+                var target = string.IsNullOrEmpty(LogFile)
+                    ? Path.Combine(Path.GetTempPath(), "awarelab-crash.txt")
+                    : LogFile;
+                File.AppendAllText(target,
+                    "[" + DateTime.Now.ToString("HH:mm:ss") + "] " + where + " " + text + "\r\n", Encoding.UTF8);
+            }
+            catch { }
+        }
+
         // ---------- 启动信息窗口 ----------
 
         private static void ShowInfoWindow(string url)
@@ -287,7 +320,7 @@ namespace AwareLab
             try
             {
                 var text = new StringBuilder();
-                text.AppendLine("AwareLab 安全意识演练平台");
+                text.AppendLine("AwareLab 安全意识演练平台 " + BuildInfo.Version);
                 text.AppendLine();
                 text.AppendLine("管理后台: " + url + "/");
                 text.AppendLine("账号: " + ReadPanelValue("username"));
