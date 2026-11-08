@@ -4,6 +4,37 @@
 [语义化版本](https://semver.org/lang/zh-CN/)。版本号以 `server/package.json` 与
 `web/package.json` 的 `version` 为准，两者始终保持一致。
 
+## [2.5.0] - 2026-11-08
+
+exe 从「控制台弹一串字 + 调起你的浏览器」变成了一个真正的桌面程序：自带窗口、任务栏图标、托盘菜单，
+关掉启动时那个小控制台也不影响它跑。
+
+### 变更
+
+- **exe 改为自带 WebView2 窗口的桌面程序**：`dist/AwareLab.exe` 现在是一个 C# WinForms 启动器
+  （`launcher/AwareLab.cs`、`launcher/Shell.cs`），把服务端（Node SEA）与 WebView2 托管库作为资源内嵌，
+  启动时解到 `%LOCALAPPDATA%\AwareLab\app\<版本>` 再无窗口拉起，界面显示在自己的窗口里，
+  **不再调起系统浏览器**，任务栏里是 AwareLab 的图标。
+- **启动信息改到独立的小控制台**：管理地址、账号、口令、数据目录写进 `启动信息.txt`，由 `AwareLabInfo.exe`
+  在独立控制台里打印；**关掉它不影响主程序**——以前那个控制台就是服务端本身，关掉等于停服。
+- **服务端挂进 Windows 作业对象**：启动器被强杀或崩溃时服务端跟着结束（`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`），
+  不再出现"窗口没了但 7778 和 8000-9999 还被占着"的僵尸进程。
+- **托盘菜单**：打开窗口 / 重新加载 / 打开数据目录 / 复制后台地址 / 退出；窗口内 `Ctrl+R` 重载。
+- **服务端新增 `AWARELAB_NO_BROWSER=1`**（`server/src/boot/main.js`）：启动器设置它来抑制"自动开浏览器"；
+  直接双击 `AwareLabServer.exe`（`--skip-launcher` 的产物）时行为不变，仍会开浏览器。
+- **数据目录默认跟随 exe**：优先 `<exe目录>\AwareLab-data`，不可写时退 `%LOCALAPPDATA%\AwareLab`；
+  `AWARELAB_HOME` 仍可覆盖。
+- **打包脚本重写为七步**（`server/scripts/build-exe.mjs`）：构建前端 → esbuild 打包服务端 → 生成 SEA blob →
+  注入 `AwareLabServer.exe` → 编译 `AwareLabInfo.exe` → 用系统自带的 `csc.exe` 编译启动器并内嵌全部资源 →
+  rcedit 写图标与版本。新增 `--skip-launcher` 只产出服务端单文件。
+- **README 重写**：只讲功能、界面、三个平面、实现方式与打包方法，删掉了原「验证体系」整章、徽章里的
+  断言数与测试脚本清单。
+
+### 修复
+
+- **`AwareLabInfo.exe` 缺入口点**（`CS5001`）与启动器误引用 `InfoConsole`（`CS0103`）：后者是独立程序集，
+  启动器改为通过 `Process.Start` 调它，不再在编译期引用。
+
 ## [2.4.0] - 2026-11-06
 
 两件让人少走弯路的事：界面每个角落都能看到当前版本，演练总览旁边多了一份能直接点的使用说明。

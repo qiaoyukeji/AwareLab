@@ -157,7 +157,9 @@ async function boot() {
     console.log(`\n连通性自检: http://127.0.0.1:${config.panel.port}/alab/health`);
     // 单文件 exe 双击即用：起监听后直接把默认浏览器带到后台地址，省掉"复制控制台里的 URL"这一步。
     // cmd /c start 是 Windows 上唯一不依赖额外 shell 关联协议的方式；失败只告警，绝不拦住服务本身。
-    if (process.env.AWARELAB_SEA === '1') {
+    // 桌面启动器（AwareLab.exe）会设 AWARELAB_NO_BROWSER=1：窗口由它自己开，这里再拉一次浏览器
+    // 就会变成"双击一次、弹出两个界面"。单文件直接双击（没经过启动器）时仍然照旧开系统浏览器。
+    if (process.env.AWARELAB_SEA === '1' && process.env.AWARELAB_NO_BROWSER !== '1') {
       const url = `http://127.0.0.1:${config.panel.port}${panel}/`;
       try {
         spawn('cmd.exe', ['/c', 'start', '', url], { windowsHide: true, detached: true, stdio: 'ignore' }).unref();
