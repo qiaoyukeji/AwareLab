@@ -138,9 +138,14 @@ function buildServerExe() {
 /** 编译期常量：界面标题与启动信息里显示的版本号，来自 server/package.json。 */
 function writeBuildInfo() {
   fs.mkdirSync(BUILD_DIR, { recursive: true });
+  // 程序集版本必须写进源码：Framework 自带的 csc.exe 没有 /assemblyversion 开关。
+  // 不写的话 exe 的 AssemblyVersion 是 0.0.0，解包目录会全挤到 app\0.0.0，
+  // 上一份服务端会被当成"版本没变"继续用，界面显示的还是旧前端。
   fs.writeFileSync(
     BUILD_INFO,
     '// 由 scripts/build-exe.mjs 生成，勿手改。\r\n' +
+    `[assembly: System.Reflection.AssemblyVersion("${VERSION}.0")]\r\n` +
+    `[assembly: System.Reflection.AssemblyFileVersion("${VERSION}.0")]\r\n` +
     'namespace AwareLab\r\n{\r\n    internal static class BuildInfo\r\n    {\r\n' +
     `        public const string Version = "${VERSION}";\r\n` +
     '    }\r\n}\r\n'

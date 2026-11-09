@@ -39,7 +39,7 @@ namespace AwareLab
         {
             AppDir = Path.GetDirectoryName(Application.ExecutablePath);
             HomeDir = ResolveHome();
-            WorkDir = Path.Combine(LocalAppData(), "AwareLab", "app", AssemblyVersion());
+            WorkDir = Path.Combine(LocalAppData(), "AwareLab", "app", BuildInfo.Version);
             LogFile = Path.Combine(HomeDir, "启动日志.txt");
 
             bool createdNew;
@@ -149,7 +149,10 @@ namespace AwareLab
         {
             Directory.CreateDirectory(WorkDir);
             var marker = Path.Combine(WorkDir, ".unpacked");
-            var expected = AssemblyVersion() + "|" + new FileInfo(Application.ExecutablePath).Length;
+            // 标记里必须带"这个 exe 是哪一次构建"的信息：只比版本号和长度的话，
+            // 两次同版本、长度又碰巧相同的构建会互相顶替，界面还在跑上一份服务端。
+            var self = new FileInfo(Application.ExecutablePath);
+            var expected = BuildInfo.Version + "|" + self.Length + "|" + self.LastWriteTimeUtc.Ticks;
 
             if (File.Exists(marker) && File.ReadAllText(marker).Trim() == expected &&
                 File.Exists(Path.Combine(WorkDir, "AwareLabServer.exe")))

@@ -4,6 +4,23 @@
 [语义化版本](https://semver.org/lang/zh-CN/)。版本号以 `server/package.json` 与
 `web/package.json` 的 `version` 为准，两者始终保持一致。
 
+## [2.5.2] - 2026-11-09
+
+打包环节的一处隐患：同版本号重复构建时，启动器可能继续用上一次解包的旧服务端，表现为窗口标题是新版本、
+页面里还是旧版本。
+
+### 修复
+
+- **启动器解包目录改用 `BuildInfo.Version`**：`csc.exe` 没有 `/assemblyversion` 开关（加了报
+  `CS2007: 无法识别的选项`），`Assembly.GetName().Version` 恒为 `0.0.0`，所有构建都挤到
+  `%LOCALAPPDATA%\AwareLab\app\0.0.0`。现在 `BuildInfo.cs` 里直接写
+  `[assembly: AssemblyVersion("…")]` / `[assembly: AssemblyFileVersion("…")]`，`WorkDir` 取
+  `BuildInfo.Version`，不同版本各占一个目录。
+- **解包标记加入文件时间**：原来只比 `版本|exe 长度`，两次构建长度相近时会判定"不用重解"。现在标记为
+  `版本|长度|最后写入时间`，改一行代码重新打包也能正确刷新。
+- **关窗对话框第二行被裁**：说明文字超出 446×70 的区域，"…这次演练就用到这里"后半句显示不出来；
+  文案压到两行以内，字号与行距按 490×212 的客户区重新排过。
+
 ## [2.5.1] - 2026-11-09
 
 两个使用上的小改动：发出去的 exe 一眼能看出是哪个版本；点右上角的 × 不会再把演练中途的站点一起关掉。

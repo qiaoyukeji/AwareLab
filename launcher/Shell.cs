@@ -253,8 +253,8 @@ namespace AwareLab
 
             var body = new Label
             {
-                Text = "最小化：窗口收进托盘，程序继续运行，演练期间的站点仍然对目标开放。\n" +
-                       "直接退出：停掉所有监听、结束服务端进程，这次演练就用到这里。",
+                Text = "最小化：窗口收进托盘，程序继续运行，站点仍对目标开放。\n" +
+                       "直接退出：停掉所有监听、结束服务端，这次演练就到这里。",
                 Location = new Point(22, 50),
                 Size = new Size(446, 70),
                 ForeColor = Color.FromArgb(64, 74, 84),
