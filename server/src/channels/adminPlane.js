@@ -18,13 +18,14 @@ function readShell() {
 }
 
 /**
- * 依次挂出：`/` 302 到随机入口、`<panel>/api` 管理接口（鉴权在 api 层）、静态产物、壳页面兜底、错误中间件。
+ * 依次挂出：`/` 回中性 404（不暴露随机入口）、`<panel>/api` 管理接口（鉴权在 api 层）、静态产物、壳页面兜底、错误中间件。
  * 随机路径就是入口地址，只在运行时注入；没有构建产物时给 503 中文提示，接口写错由 api/index.js 的 404 兜住，不能让壳页面返回 200 + HTML。
  */
 export function mountAdminPlane(app) {
   const panel = `/${config.panel.path}`;
-  // 闸门是 api 层的会话鉴权，随机路径只让入口猜不中
-  app.get('/', (_req, res) => res.redirect(`${panel}/`));
+  // 根路径不再 302 到随机后台路径：那等于把入口直接告诉任何扫端口的人。这里回一句中性 404，
+  // 入口只在启动横幅、启动信息窗口与本机配置文件里出现
+  app.get('/', (_req, res) => res.status(404).type('text/plain').send('Not Found'));
   app.use(`${panel}/api`, apiRoot);
 
   const hasShell = fs.existsSync(path.join(config.paths.webDist, 'index.html'));

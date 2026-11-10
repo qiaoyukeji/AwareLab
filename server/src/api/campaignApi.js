@@ -9,6 +9,7 @@ import { all, get, insert, nowIso, pagedRows, run, update } from '../platform/st
 import { ok, badRequest, notFound, paginate } from '../platform/net/envelope.js';
 import { assertDeployment, findActive } from '../security/mandate.js';
 import { writeAudit } from '../security/audit.js';
+import { ownerClause, ownsRow } from '../security/scope.js';
 import { mailBase, needsSite, taskSiteOrigin } from '../mail/composer.js';
 import { deliverCampaign, resendRecipient } from '../mail/campaignRunner.js';
 
@@ -60,10 +61,25 @@ const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 /** 任务出参归一：dry_run 库里是 0/1，接口一律给布尔，否则前端要为同一字段写两套判断。 */
 const taskView = (task) => (task ? { ...task, dry_run: Boolean(task.dry_run) } : task);
 
+/**
+ * 按 id 取任务并核归属：不存在、或不属于当前操作员，一律回 404 并返回 null。
+ * 用 404 而不是 403——403 等于告诉猜 id 的人「这条任务真的存在」。
+ */
+function loadOwnedTask(req, res, id = req.params.id) {
+  const task = get('SELECT * FROM mail_tasks WHERE id=?', [id]);
+  if (!task || !ownsRow(req, task)) {
+    notFound(res, '发送任务不存在');
+    return null;
+  }
+  return task;
+}
+
 /** GET /mail-tasks — 任务列表分页倒序，每行附加 stats（收件人状态计数，N+1 但量级小可接受）。 */
 campaignApi.get('/mail-tasks', (req, res) => {
   const { page, page_size } = paginate(req.query);
-  const data = pagedRows('mail_tasks', '', [], page, page_size);
+  // 普通用户只看自己建的任务；管理员不加条件
+  const scope = ownerClause(req, 'mail_tasks');
+  const data = pagedRows('mail_tasks', 'WHERE 1=1' + scope.sql, scope.params, page, page_size);
   ok(res, {
     ...data,
     rows: data.rows.map((task) => ({ ...taskView(task), stats: statusCounts(task.id) })),
@@ -73,8 +89,8 @@ campaignApi.get('/mail-tasks', (req, res) => {
 // GET /mail-tasks/:id — 任务详情 {task, recipients, events}，id 不存在回 404。
 // events 并两条线：任务级按 ref_id，访客侧只带令牌、靠 token IN 本任务收件人令牌集认领。
 campaignApi.get('/mail-tasks/:id', (req, res) => {
-  const task = get('SELECT * FROM mail_tasks WHERE id=?', [req.params.id]);
-  if (!task) return notFound(res, '任务不存在');
+  const task = loadOwnedTask(req, res);
+  if (!task) return;
   ok(res, {
     task: taskView(task),
     recipients: all('SELECT * FROM mail_recipients WHERE task_id=? ORDER BY created_at', [task.id]),
@@ -112,6 +128,8 @@ campaignApi.post('/mail-tasks', (req, res) => {
     // 库里 0/1 落形（node:sqlite 不收布尔），出参由 taskView 翻回布尔
     dry_run: dryRun ? 1 : 0,
     authorization_id: findActive().id,
+    // 归属：普通用户只能看见、只能操作自己建的任务
+    owner_id: req.user?.id || null,
     status: 'draft',
     created_at: now,
     updated_at: now,
@@ -123,7 +141,7 @@ campaignApi.post('/mail-tasks', (req, res) => {
 // PUT /mail-tasks/:id — 白名单字段补丁（undefined=不动，空值=清 NULL）；先 notFound 再 UPDATE，否则改 0 行不报错照样回成功。
 // 沙箱开关翻转时写 sandbox_toggle 审计；编辑不过授权门禁，真发的闸门在 /send 与 runner。
 campaignApi.put('/mail-tasks/:id', (req, res) => {
-  if (!get('SELECT 1 AS x FROM mail_tasks WHERE id=?', [req.params.id])) return notFound(res, '任务不存在');
+  if (!loadOwnedTask(req, res)) return;
   const b = req.body || {};
   // 先留 dry_run 旧值：翻转判定要拿"改前 vs 改后"对比，改完再查就看不出来过
   const before = get('SELECT dry_run FROM mail_tasks WHERE id=?', [req.params.id]);
@@ -154,8 +172,8 @@ campaignApi.put('/mail-tasks/:id', (req, res) => {
 // 文件名净化：path.basename 斩目录段防 ../，非 [\w . - 汉字] 换下划线（靠 multer 的 utf8 才有中文）；落 attachments/<任务id>-<净化名>，前缀防跨任务撞名，旧文件不删。
 campaignApi.post('/mail-tasks/:id/attachment', upload.single('file'), (req, res) => {
   if (!req.file) return badRequest(res, '未收到附件');
-  const task = get('SELECT * FROM mail_tasks WHERE id=?', [req.params.id]);
-  if (!task) return notFound(res, '任务不存在');
+  const task = loadOwnedTask(req, res);
+  if (!task) return;
   const safe = path.basename(req.file.originalname).replace(/[^\w.\-一-龥]/g, '_');
   const file = path.join(config.paths.attachments, `${task.id}-${safe}`);
   // 内存缓冲直写磁盘（25MB 封顶）：附件只认这一条进库路
@@ -167,8 +185,8 @@ campaignApi.post('/mail-tasks/:id/attachment', upload.single('file'), (req, res)
 // POST /mail-tasks/:id/recipients — 收件人导入，同任务邮箱去重，返回 {added, skipped, invalid}，404 若任务不存在。
 // 每人一个令牌并同写 capture_tokens，页面采集与邮件归属才能串到同一人。
 campaignApi.post('/mail-tasks/:id/recipients', (req, res) => {
-  const task = get('SELECT * FROM mail_tasks WHERE id=?', [req.params.id]);
-  if (!task) return notFound(res, '任务不存在');
+  const task = loadOwnedTask(req, res);
+  if (!task) return;
   const list = parseRecipients(req.body || {});
   const valid = list.filter((r) => r.email && EMAIL_PATTERN.test(r.email));
   let added = 0;
@@ -205,8 +223,8 @@ campaignApi.post('/mail-tasks/:id/recipients', (req, res) => {
 // 审计按 dry_run 分流 sandbox_send / real_send；status 讲真话（投了却一封没成=failed、部分=partial、全成=sent；名册全都投过则原样返回不改判失败）。
 campaignApi.post('/mail-tasks/:id/send', async (req, res) => {
   if (!assertDeployment(res)) return;
-  const task = get('SELECT * FROM mail_tasks WHERE id=?', [req.params.id]);
-  if (!task) return notFound(res, '任务不存在');
+  const task = loadOwnedTask(req, res);
+  if (!task) return;
   // 没收件人就报"先导入"：这是投放动作，不该走到 runner
   if (!get('SELECT COUNT(*) AS n FROM mail_recipients WHERE task_id=?', [task.id]).n) {
     return badRequest(res, '请先导入收件人');
@@ -231,12 +249,12 @@ campaignApi.post('/mail-tasks/:id/send', async (req, res) => {
 // POST /mail-tasks/:id/recipients/:rid/resend — 只补发这一个收件人，不重过整张队列。收件人按 id AND task_id 查，别家 rid 冒不了本任务的名（错位会发错人）。
 // 不过授权门禁，真发判定由 runner 兜底；此路径不写审计，real_send 只在 /send 落。
 campaignApi.post('/mail-tasks/:id/recipients/:rid/resend', async (req, res) => {
-  if (!get('SELECT 1 AS x FROM mail_tasks WHERE id=?', [req.params.id])) return notFound(res, '任务不存在');
+  if (!loadOwnedTask(req, res)) return;
   if (!get('SELECT 1 AS x FROM mail_recipients WHERE id=? AND task_id=?', [req.params.rid, req.params.id])) {
     return notFound(res, '收件人不存在');
   }
-  const task = get('SELECT * FROM mail_tasks WHERE id=?', [req.params.id]);
-  if (!task) return notFound(res, '任务不存在');
+  const task = loadOwnedTask(req, res);
+  if (!task) return;
   try {
     ok(res, await resendRecipient(req.params.id, req.params.rid, { base: mailBase(task, req) }));
   } catch (err) {
@@ -247,8 +265,7 @@ campaignApi.post('/mail-tasks/:id/recipients/:rid/resend', async (req, res) => {
 // DELETE /mail-tasks/:id — 删任务与其收件人名册，不设门禁。mail_recipients 无外键级联，须先按 task_id 显式删子表，否则孤儿收件人咬住看板与重发。
 // 磁盘附件、events、capture_tokens 与已采记录都留着：任务没了证据还在；审计记下删掉的收件人数。
 campaignApi.delete('/mail-tasks/:id', (req, res) => {
-  const task = get('SELECT 1 AS x FROM mail_tasks WHERE id=?', [req.params.id]);
-  if (!task) return notFound(res, '任务不存在');
+  if (!loadOwnedTask(req, res)) return;
   // 删之前先数收件人：审计里这个数是"删了多少人名册"的唯一凭证，删完再数永远是 0
   const recipients = get('SELECT COUNT(*) AS n FROM mail_recipients WHERE task_id=?', [req.params.id]).n;
   run('DELETE FROM mail_recipients WHERE task_id=?', [req.params.id]);

@@ -353,6 +353,21 @@ function addSitePublicUrl(db) {
   db.exec('ALTER TABLE web_sites ADD COLUMN public_url TEXT');
 }
 
+// v10：数据归属。README 承诺「普通用户只看到分给自己的部分」，但站点与邮件任务表原先没有归属列，
+// 任何登录账号都能看到全部演练数据。这里补 owner_id：NULL 视为无主（只有管理员看得见），管理员本身看全部。
+// 回填不做猜测——老数据大概率是管理员建的，留在 NULL 里不对外暴露，需要共享时由管理员在库里指定归属。
+function addOwnershipColumns(db) {
+  const addColumn = (table, column, ddl) => {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+    if (columns.some((item) => item.name === column)) return;
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  };
+  addColumn('web_sites', 'owner_id', 'owner_id TEXT');
+  addColumn('mail_tasks', 'owner_id', 'owner_id TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_web_sites_owner ON web_sites(owner_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_mail_tasks_owner ON mail_tasks(owner_id)');
+}
+
 // 迁移清单：数组顺序即执行顺序，version 严格递增且永不改历史条目。up 是字符串就直接 exec，是函数就先查表结构（加列专用）。
 // 加迁移只在尾部 push version=上一项+1；改已发布条目的 SQL 会让老库错位。
 const MIGRATIONS = [
@@ -374,6 +389,8 @@ const MIGRATIONS = [
   { version: 8, label: '账号体系与短信认证', up: addUsersAndSms },
   // v9：站点对外地址（反代域名），邮件链接与二维码按它生成，不再把监听端口带到外网
   { version: 9, label: '站点对外访问地址', up: addSitePublicUrl },
+  // v10：站点与邮件任务补 owner_id，普通用户只看到自己建的；为空的老数据归管理员
+  { version: 10, label: '演练数据归属', up: addOwnershipColumns },
 ];
 
 // 最新结构版本 = 迁移数组最后一项，启动横幅与自检比对的就是它；别手写成常量

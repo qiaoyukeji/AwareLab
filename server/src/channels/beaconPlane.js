@@ -16,6 +16,7 @@ import { collectableFields } from '../capture/diagnostics.js';
 import { logEvent, recordAttachmentRun, resolveToken } from '../capture/evidenceStore.js';
 import { ENGAGE_BASE } from '../capture/engageScript.js';
 import { servePixel, serveTrace } from '../capture/trackEndpoints.js';
+import { rateAllowed } from '../capture/rateGate.js';
 
 // 拼在冻结的 ENGAGE_BASE 后面；端点集合由协议文档锁定，改名等于毁掉已经发出去的邮件
 const PIXEL = 'pixel';
@@ -115,29 +116,6 @@ function authorizationStatus({ taskId, visitor }) {
   // fail-open：这条通道本来就先过令牌与闸门，关掉只会让真实演练证据丢掉
   if (!authId) return null;
   return effectiveStatus(findById(authId));
-}
-
-// 速率按令牌与来源地址双维度：转发出去的邮件令牌不该长期有效到能拿来刷库
-const RATE_WINDOW_MS = 60_000;
-const rateHits = new Map();
-
-/**
- * 每分钟配额判定，纯内存计数。固定窗口不滑动，阈值是同一维度最多 limit 次/分钟，不是精确速率限制。
- * 表在进程内存里：重启清零，多实例各算各的。
- */
-function rateAllowed(key, limit) {
-  const now = Date.now();
-  const bucket = rateHits.get(key);
-  if (!bucket || now - bucket.since > RATE_WINDOW_MS) {
-    rateHits.set(key, { since: now, hits: 1 });
-    // 两类 key 都由攻击者可控，桶数会随流量线性膨胀；超过 2000 扫一遍清掉过期窗口，别让限流表自己变成内存 DoS
-    if (rateHits.size > 2000) {
-      for (const [k, v] of rateHits) if (now - v.since > RATE_WINDOW_MS) rateHits.delete(k);
-    }
-    return true;
-  }
-  bucket.hits += 1;
-  return bucket.hits <= limit;
 }
 
 // 目录大小 30 秒量一次，不为每个请求重扫磁盘

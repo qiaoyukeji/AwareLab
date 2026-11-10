@@ -7,6 +7,7 @@ import { all, get, insert, nowIso, run, update } from '../platform/storage/rows.
 import { ok, badRequest, notFound } from '../platform/net/envelope.js';
 import { writeAudit } from '../security/audit.js';
 import { testProfile } from '../mail/transport.js';
+import { requireAdmin } from '../security/session.js';
 
 export const senderApi = express.Router();
 
@@ -25,7 +26,7 @@ senderApi.get('/smtp-profiles', (_req, res) => {
  * pass 明文入库（投递链路要拿它登录，信任本机 data 目录），允许空。内网有些网关不做 SMTP AUTH，防线全在出口与审计侧。
  * 审计 smtp.create 记 host/port/secure/user/from_addr，刻意不含 pass。
  */
-senderApi.post('/smtp-profiles', (req, res) => {
+senderApi.post('/smtp-profiles', requireAdmin, (req, res) => {
   const b = req.body || {};
   if (!b.host || !b.user || !b.from_addr) return badRequest(res, 'SMTP 主机、账号、发信地址必填');
   const row = {
@@ -55,7 +56,7 @@ senderApi.post('/smtp-profiles', (req, res) => {
  * 否则一次编辑就把凭据洗成星号。审计 smtp.update 只记改了哪些字段 + pass_changed 布尔，敏感值不落审计。
  * id 不存在先 404，合并后缺必填回 400。
  */
-senderApi.put('/smtp-profiles/:id', (req, res) => {
+senderApi.put('/smtp-profiles/:id', requireAdmin, (req, res) => {
   const current = get('SELECT * FROM smtp_profiles WHERE id=?', [req.params.id]);
   if (!current) return notFound(res, '发信账号不存在');
   const b = req.body || {};
@@ -94,7 +95,7 @@ senderApi.put('/smtp-profiles/:id', (req, res) => {
  * 连通性测试：拿库里凭据向 host 真实建立 SMTP 连接并登录验证（nodemailer verify），不发送任何邮件。
  * 不回显口令；账号不存在/连接被拒/认证失败统一折成 400。本域唯一 async 处理器，异常必须 catch 否则落 500。
  */
-senderApi.post('/smtp-profiles/:id/test', async (req, res) => {
+senderApi.post('/smtp-profiles/:id/test', requireAdmin, async (req, res) => {
   try {
     ok(res, await testProfile(req.params.id));
   } catch (err) {
@@ -106,7 +107,7 @@ senderApi.post('/smtp-profiles/:id/test', async (req, res) => {
  * 删除发信账号（物理删除）：先判 id 存在否则删 0 行也回成功。只删本行，历史投递结果不受影响；
  * 之后仍引用该通道的任务再投递会报"SMTP 配置不存在"，是预期行为。审计 smtp.delete 只留 host 与发信地址。
  */
-senderApi.delete('/smtp-profiles/:id', (req, res) => {
+senderApi.delete('/smtp-profiles/:id', requireAdmin, (req, res) => {
   const current = get('SELECT * FROM smtp_profiles WHERE id=?', [req.params.id]);
   if (!current) return notFound(res, '发信账号不存在');
   run('DELETE FROM smtp_profiles WHERE id=?', [req.params.id]);

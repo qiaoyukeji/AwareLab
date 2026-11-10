@@ -278,7 +278,12 @@ export function buildReportCsv(authorizationId) {
   const data = collect(authorizationId);
   if (!data) return null;
   const header = ['记录UUID', '渠道', '终端标识(掩码)', '站点/任务', '首次打开', '提交时间', '停留秒', '处置状态', '采集字段数', '采集内容(凭据已掩码)'];
-  const cell = (value) => `"${String(value ?? '').replace(/"/g, '""').replace(/\r?\n/g, ' ')}"`;
+  // 与 evidenceApi 的 csvCell 同一套转义：引号翻倍、换行压空格，公式前缀补单引号防 Excel 执行
+  const cell = (value) => {
+    let text = String(value ?? '').replace(/\r?\n/g, ' ');
+    if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+    return `"${text.replace(/"/g, '""')}"`;
+  };
   // 载体要写成甲方读得懂的话：给一串 UUID 时对不上是哪张网、哪封信，第一列的记录 UUID 已经够做对照键
   const carrierName = new Map();
   for (const site of data.sites) carrierName.set(site.id, `钓鱼网页 · 端口 ${site.listen_port}${site.domain ? ` · ${site.domain}` : ''}`);

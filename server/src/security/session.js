@@ -30,6 +30,42 @@ const LOCK_WINDOW_MS = 10 * 60 * 1000;
 // 窗口内允许 8 次失败：留够手打输错空间，同时压住常见字典攻击
 const MAX_FAILS = 8;
 
+// 短信验证码的尝试上限：云端 PASS 不按票据计失败次数，6 位码被脚本刷时只能靠本地这道闸。
+// 内存表（来源地址 + 票据尾号）：重启后票据本来就可能过期，不必落库
+const SMS_MAX_ATTEMPTS = 5;
+const SMS_WINDOW_MS = 10 * 60 * 1000;
+const smsAttempts = new Map();
+
+/** 短信尝试的计数键：同一来源地址刷同一张票据才算一次连续尝试，换票据换地址就重新计。 */
+function smsAttemptKey(req, ticket) {
+  return `${normalizeIp(clientIp(req))}|${String(ticket || '').slice(-8)}`;
+}
+
+/** 这张票据在当前地址下是否已经试满；窗口过期顺手清掉，避免表随票据无限长大。 */
+function smsBlocked(key) {
+  const row = smsAttempts.get(key);
+  if (!row) return false;
+  if (Date.now() - row.since > SMS_WINDOW_MS) {
+    smsAttempts.delete(key);
+    return false;
+  }
+  return row.count >= SMS_MAX_ATTEMPTS;
+}
+
+/** 记一次失败尝试；超过 2000 条时清过期项，键由外部输入拼成，别让它自己变成内存泵。 */
+function noteSmsAttempt(key) {
+  const now = Date.now();
+  const row = smsAttempts.get(key);
+  if (!row || now - row.since > SMS_WINDOW_MS) {
+    smsAttempts.set(key, { since: now, count: 1 });
+    if (smsAttempts.size > 2000) {
+      for (const [k, v] of smsAttempts) if (now - v.since > SMS_WINDOW_MS) smsAttempts.delete(k);
+    }
+    return;
+  }
+  row.count += 1;
+}
+
 /**
  * 登录失败计数落 login_failures 表（client_ip 主键 + fails + 窗口起点 + 最近一次，见 storage/schema.js 的 v5 迁移）。
  * 之前是内存 Map，进程重启就清零、攻击者崩一次服务就白拿一轮尝试额度；落库后重启不清零，也留得下撞库痕迹，代价只是失败时多一次写库。
@@ -245,6 +281,9 @@ export async function sendSmsCode(req, res) {
 export async function verifySmsLogin(req, res) {
   const payload = readTicket(req.body?.ticket);
   if (!payload) return badRequest(res, '验证已过期，请重新登录');
+  // 先看这张票据试满没有：满了直接拒，不再把验证码送去云端比对，省一次外呼也断掉爆破通道
+  const attemptKey = smsAttemptKey(req, req.body?.ticket);
+  if (smsBlocked(attemptKey)) return badRequest(res, '验证码错误次数过多，请重新获取验证码');
   const code = String(req.body?.code || '').replace(/\D/g, '');
   if (code.length < 4) return badRequest(res, '请输入短信验证码');
   const user = findById(payload.u);
@@ -262,12 +301,16 @@ export async function verifySmsLogin(req, res) {
   try {
     result = await checkVerifyCode(phone, code);
   } catch (error) {
+    noteSmsAttempt(attemptKey);
     return badRequest(res, error.message);
   }
   if (!result.pass) {
+    noteSmsAttempt(attemptKey);
     writeAudit(req, 'auth.sms_fail', { targetKind: 'user', targetId: user.id, actor: user.username, detail: { result: result.result } });
     return badRequest(res, '验证码错误或已过期');
   }
+  // 过了就别再攒失败次数：同一地址下一轮登录从零开始
+  smsAttempts.delete(attemptKey);
 
   let nextUser = user;
   if (payload.p === 'bind') {

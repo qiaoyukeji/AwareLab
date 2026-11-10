@@ -16,6 +16,7 @@ import {
   toView,
 } from '../security/mandate.js';
 import { writeAudit } from '../security/audit.js';
+import { requireAdmin } from '../security/session.js';
 import { all } from '../platform/storage/rows.js';
 import { ok, fail, notFound } from '../platform/net/envelope.js';
 import { closeSitesOfAuthorization, reopenSitesOfAuthorization } from '../capture/siteRegistry.js';
@@ -55,7 +56,7 @@ mandateApi.get('/authorizations/:id', (req, res) => {
  * allowed_hosts 空名单拒绝（没有白名单的授权等于随便打）；pledge 必须逐字等于 REQUIRED_PLEDGE，
  * 防"勾选同意"糊弄出空白支票。校验全在 mandate.register 内做，原因经 reject 透出（400）。
  */
-mandateApi.post('/authorizations', (req, res) => {
+mandateApi.post('/authorizations', requireAdmin, (req, res) => {
   const result = register(req.body || {});
   if (reject(res, result)) return;
   writeAudit(req, 'authorization.create', {
@@ -72,7 +73,7 @@ mandateApi.post('/authorizations', (req, res) => {
  * id 不存在 404；已吊销的不可改 409（吊销要留不可撤销的痕迹，想恢复只能重新登记）。
  * 按 effectiveStatus 级联停/复站，审计 authorization.update 记改前改后窗口对照 + 停/复数量。
  */
-mandateApi.put('/authorizations/:id', (req, res) => {
+mandateApi.put('/authorizations/:id', requireAdmin, (req, res) => {
   // 先留改前快照给审计的 from 窗口：revise 会整行覆写，事后再也拼不出旧边界
   const before = findById(req.params.id);
   const result = revise(req.params.id, req.body || {});
@@ -110,7 +111,7 @@ mandateApi.put('/authorizations/:id', (req, res) => {
  * 存在性前置校验：revoke 底层是 update，不存在的 id 改 0 行静默成功，不先判就会谎报吊销成功。
  * 吊销不可逆：revise 拒绝改已吊销记录，防"误吊销→悄悄改回来"抹掉撤销留痕。级联下线名下全部在听站点。
  */
-mandateApi.post('/authorizations/:id/revoke', (req, res) => {
+mandateApi.post('/authorizations/:id/revoke', requireAdmin, (req, res) => {
   const current = findById(req.params.id);
   if (!current) return notFound(res, '授权记录不存在');
   const row = revoke(req.params.id);

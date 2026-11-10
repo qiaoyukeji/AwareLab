@@ -20,6 +20,54 @@ const MAX_BODY = 512 * 1024;
 // 令牌不被页面脚本读走，也不长期留在公共终端上
 const VISITOR_COOKIE = 'alab_tk';
 
+// 上报字段的两道边：名字要像表单字段、值和条数都有上限。以前只判"是不是对象"，
+// 于是 512KB 请求就能塞几万个假字段、或把 4000 字的令牌当字段名存进证据表
+const FIELD_NAME = /^[\p{L}\p{N}_.-]{1,64}$/u;
+const MAX_FIELDS = 40;
+const MAX_FIELD_VALUE = 4096;
+// 令牌形状：平台的签发值是 UUID，但历史数据与自测里有短令牌；这里卡的是「长度与字符集」，挡住任意长串与二进制垃圾
+const TOKEN_SHAPE = /^[A-Za-z0-9_-]{6,64}$/;
+
+/**
+ * 只留像表单字段的键值：名字过白名单、单值截断、条数封顶。
+ * 数组原样保留（同名多值靠它摊平成多条），对象序列化成 JSON 文本——直接 String() 会变成 [object Object]，字段内容就丢了。
+ */
+function pickFields(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const fields = {};
+  let count = 0;
+  for (const [name, value] of Object.entries(raw)) {
+    if (count >= MAX_FIELDS) break;
+    if (!FIELD_NAME.test(name)) continue;
+    if (Array.isArray(value)) {
+      fields[name] = value.slice(0, 20).map((item) => clipValue(item));
+    } else {
+      fields[name] = clipValue(value);
+    }
+    count += 1;
+  }
+  return fields;
+}
+
+/** 单值落库前截断；对象走 JSON 序列化，保持证据页能看出填了什么结构。 */
+function clipValue(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'object') return JSON.stringify(value).slice(0, MAX_FIELD_VALUE);
+  return String(value).slice(0, MAX_FIELD_VALUE);
+}
+
+/**
+ * 上报里带的令牌：形状要是本平台的 UUID，长度与字符集先卡死（4000 字的串进不了库）。
+ * 认不认得出归属由 evidenceStore 回查 capture_tokens 决定，查不到就按匿名记录，不拿它编造任务归属。
+ */
+function engageToken(raw, siteId) {
+  if (typeof raw !== 'string' || !TOKEN_SHAPE.test(raw)) return null;
+  const row = resolveToken(raw);
+  // 令牌属于别的站点时也当匿名：同一套演练里换站复用，不该把记录记到别人的网址下
+  if (row && row.site_id && row.site_id !== siteId) return null;
+  return raw;
+}
+
 /** 整段读进内存，超过 MAX_BODY 就 reject 并 destroy 连接，不等读完再判。异常只给 'body too large'，不带内部信息。 */
 const readBody = (req) =>
   new Promise((resolvePromise, reject) => {
@@ -128,17 +176,15 @@ export function buildSiteHandler(siteId) {
     if (req.method === 'POST' && url.pathname === ENGAGE_ENDPOINT) {
       const data = await readJson(req);
       // tk 有两个来源（sendBeacon 那条只能拼 URL），任一边认得到就算同一个终端；格式是冻结的，不要求必须带哪个
-      const token = data.tk || url.searchParams.get('tk') || null;
+      const token = engageToken(data.tk || url.searchParams.get('tk'), siteId);
       const href = typeof data.href === 'string' ? data.href : url.searchParams.get('href') || '';
       if (data.ev === 'submit') {
-        // 数组或标量说明载荷不是这套表单发的；宁可记"提交了但没采到字段"，也不拿索引当字段名入库
-        const fields = data.fields && typeof data.fields === 'object' && !Array.isArray(data.fields) ? data.fields : {};
         recordFormSubmit({
           siteId,
           token,
           ip,
           userAgent,
-          fields,
+          fields: pickFields(data.fields),
           // 不可解析时由 evidenceStore 退回"首次见到此刻"的差值；这里预兜 0 会盖掉真实停留时长
           dwell: Number(data.dwell),
           referer: data.referer,

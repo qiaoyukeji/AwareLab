@@ -7,6 +7,8 @@ import { findActive } from '../security/mandate.js';
 import { probe } from '../capture/uaProbe.js';
 import { siteUrl } from '../capture/siteRegistry.js';
 import { writeAudit } from '../security/audit.js';
+import { requireAdmin } from '../security/session.js';
+import { ownerClause, recordScopeClause } from '../security/scope.js';
 import { authorizationSummary, buildReportCsv, buildReportHtml, educationCoverage } from '../insight/drillReport.js';
 
 export const insightApi = express.Router();
@@ -84,12 +86,33 @@ function trendOf(rows, dateField, submitField) {
   return days;
 }
 
+// ── 归属裁剪：看板、大屏、分屏读的都是站点/任务/记录三张表，普通用户只该看到自己建的那部分 ──────
+// 三张表以前是整库读，等于把别人的钓到的东西一起摊在看板上；这里统一加 owner 条件，管理员不加。
+
+/** 当前请求可见的站点；columns 用来只挑需要的列（大屏不下发 tls_key/tls_cert）。 */
+function scopedSites(req, columns = '*') {
+  const scope = ownerClause(req, 'web_sites');
+  return all(`SELECT ${columns} FROM web_sites WHERE 1=1${scope.sql}`, scope.params);
+}
+
+/** 当前请求可见的邮件任务（新的在前，与列表页一致）。 */
+function scopedTasks(req, columns = '*') {
+  const scope = ownerClause(req, 'mail_tasks');
+  return all(`SELECT ${columns} FROM mail_tasks WHERE 1=1${scope.sql} ORDER BY created_at DESC`, scope.params);
+}
+
+/** 当前请求可见的上钩记录；extra 拼在归属条件之后（如 " AND kind='web'"），值由调用方用常量给。 */
+function scopedRecords(req, columns = '*', extra = '') {
+  const scope = recordScopeClause(req, 'records');
+  return all(`SELECT ${columns} FROM records WHERE 1=1${scope.sql}${extra}`, scope.params);
+}
+
 /**
  * 邮件漏斗。转化率分母用登记收件人数而非打开数：打开依赖图片信标，容易被邮件客户端拦截，
  * 用投递数算出来的是保守值。网页侧没有投递环节，分母是打开数，两边口径不可混用。
  */
-function mailStats() {
-  const taskIds = all('SELECT id FROM mail_tasks').map((t) => t.id);
+function mailStats(req) {
+  const taskIds = scopedTasks(req, 'id').map((t) => t.id);
   // 收件人按所有任务 id IN 查询（占位符参数化）；没有任务时空集，不发 SQL
   const recipients = taskIds.length
     ? all(`SELECT * FROM mail_recipients WHERE task_id IN (${taskIds.map(() => '?').join(',')})`, taskIds)
@@ -103,11 +126,11 @@ function mailStats() {
 // 首页/看板一次读齐：整屏指标从一个端点出，只读、无参数、恒 200。
 // risk_score=100-网页转化率、夹到 0-100、一位小数；risk_level 红黄绿映射（>=90 安全 / >=70 需关注 / 否则高风险）；authorization 为 null 时顶栏提示先去登记授权。
 // web_stats.conversion 分母是打开数，mail_stats 分母是登记收件人，口径不同不可混；education 是全库教育覆盖率。
-insightApi.get('/stats/home', (_req, res) => {
+insightApi.get('/stats/home', (req, res) => {
   // 三张表整捞后内存过滤：演练库量级（千行内）离慢查询还远，换口径只写一遍、不打一堆聚合 SQL
-  const sites = all('SELECT * FROM web_sites');
+  const sites = scopedSites(req);
   const templates = all('SELECT id, name, type FROM web_templates');
-  const webRecords = all("SELECT * FROM records WHERE kind='web'");
+  const webRecords = scopedRecords(req, '*', " AND kind='web'");
   const { opened, not_submitted, submitted } = webStats(webRecords);
   const conversion = rate(submitted, opened);
   // 100-92.9 在浮点里是 7.099...94，首页大屏会把尾巴显出来，过 rate 抹平；夹到 0-100 防脏行让转化率破 100、风险分变负
@@ -124,8 +147,8 @@ insightApi.get('/stats/home', (_req, res) => {
       authorization: findActive()?.scope ?? null,
     },
     web_stats: { opened, not_submitted, submitted, conversion, total_records: webRecords.length },
-    mail_stats: mailStats(),
-    education: educationOverview(),
+    mail_stats: mailStats(req),
+    education: educationOverview(req),
     ...deviceBuckets(webRecords),
     funnel: { opened, not_submitted, submitted },
     trend: trend(webRecords),
@@ -146,22 +169,26 @@ insightApi.get('/stats/home', (_req, res) => {
 
 // 大屏数据流：投屏轮询、给原始流水（与 /stats/home 的聚合分工不同）。sites 只挑 id/端口/域名/状态、不带 tls_key/tls_cert，records 不含 form_json。
 // token/target_email 仍明文，本端点只在操作员本机/受控内网看、绝不对外暴露；LIMIT 拼的是代码常量、非用户输入。
-insightApi.get('/stats/bigscreen', (_req, res) => {
+insightApi.get('/stats/bigscreen', (req, res) => {
+  const scope = recordScopeClause(req, 'records');
   ok(res, {
     events: all('SELECT * FROM events ORDER BY created_at DESC LIMIT ' + BIGSCREEN_EVENT_LIMIT),
-    sites: all('SELECT id, listen_port, domain, status FROM web_sites'),
+    sites: scopedSites(req, 'id, listen_port, domain, status'),
     records: all(
-      'SELECT id, kind, token, target_email, first_seen_at, submitted_at, dwell_seconds FROM records ORDER BY created_at DESC LIMIT ' +
-        BIGSCREEN_EVENT_LIMIT
+      'SELECT id, kind, token, target_email, first_seen_at, submitted_at, dwell_seconds FROM records WHERE 1=1' +
+        scope.sql +
+        ' ORDER BY created_at DESC LIMIT ' +
+        BIGSCREEN_EVENT_LIMIT,
+      scope.params
     ),
   });
 });
 
 // 教育闭环概览：全部上钩记录的处置分布与教育覆盖率，看板与报告共用一套口径。
 // 全库口径不按授权过滤，按授权维度的在 summary 里。
-function educationOverview() {
+function educationOverview(req) {
   // 只取 disposition 一列：这张表带 form_json（凭据明文），算覆盖率不需要它，少捞一列就少一次把明文读进内存
-  const rows = all('SELECT disposition FROM records');
+  const rows = scopedRecords(req, 'disposition');
   return educationCoverage(rows);
 }
 
@@ -197,26 +224,28 @@ function taskMailStats(taskId) {
  * 不返回 form_json / feature_json：投屏上只该出现"多少人、什么终端"，字段内容留在取证工作区。
  * 对象不存在返回 null，由路由回 404——空屏会让投屏的人以为"这条线没人上钩"。
  */
-function buildScreen(kind, id) {
-  const sites = all('SELECT * FROM web_sites');
+function buildScreen(kind, id, req) {
+  const sites = scopedSites(req);
   const templates = all('SELECT id, name FROM web_templates');
   const site = kind === 'site' ? sites.find((s) => s.id === id) : null;
   if (kind === 'site' && !site) return null;
-  const task = kind === 'task' ? get('SELECT * FROM mail_tasks WHERE id=?', [id]) : null;
+  // 任务屏也要按归属取：直接 get 全表会把别人的任务投到自己的大屏上
+  const task = kind === 'task' ? scopedTasks(req).find((t) => t.id === id) : null;
   if (kind === 'task' && !task) return null;
 
+  const recScope = recordScopeClause(req, 'records');
   const records =
     kind === 'site'
-      ? all('SELECT * FROM records WHERE site_id=? ORDER BY created_at DESC', [id])
+      ? all(`SELECT * FROM records WHERE 1=1${recScope.sql} AND site_id=? ORDER BY created_at DESC`, [...recScope.params, id])
       : kind === 'task'
-        ? all('SELECT * FROM records WHERE task_id=? ORDER BY created_at DESC', [id])
-        : all('SELECT * FROM records ORDER BY created_at DESC');
+        ? all(`SELECT * FROM records WHERE 1=1${recScope.sql} AND task_id=? ORDER BY created_at DESC`, [...recScope.params, id])
+        : all(`SELECT * FROM records WHERE 1=1${recScope.sql} ORDER BY created_at DESC`, recScope.params);
 
   const webRecords = records.filter((r) => r.kind === 'web');
   const { opened, submitted, not_submitted } = webStats(webRecords);
   const conversion = rate(submitted, opened);
   const riskScore = Math.round(Math.max(0, Math.min(100, 100 - conversion)) * 10) / 10;
-  const mail = kind === 'task' ? taskMailStats(id) : kind === 'all' ? mailStats() : null;
+  const mail = kind === 'task' ? taskMailStats(id) : kind === 'all' ? mailStats(req) : null;
   // 任务屏的曲线看邮件侧：收件人按打开/提交时间落桶，才能解释"发出去之后第几天开始有人点"
   const mailTrendRows = kind === 'task' ? all('SELECT opened_at, submitted_at FROM mail_recipients WHERE task_id=?', [id]) : null;
   // 平均停留只统计真正交过内容的记录：只打开没填的行 dwell 为空或 0，混进来会把均值拉平
@@ -246,7 +275,7 @@ function buildScreen(kind, id) {
               submitted: of.filter((r) => r.submitted_at).length,
             };
           }),
-          tasks: all('SELECT * FROM mail_tasks ORDER BY created_at DESC').map((t) => {
+          tasks: scopedTasks(req).map((t) => {
             const m = taskMailStats(t.id);
             return {
               id: t.id,
@@ -330,11 +359,11 @@ function buildScreen(kind, id) {
 }
 
 // 大屏目录：前端选择器用它列出"总屏 + 每个站点 + 每个任务"，一次拿齐，切屏不用再试探。
-insightApi.get('/stats/screens', (_req, res) => {
-  const sites = all('SELECT * FROM web_sites');
+insightApi.get('/stats/screens', (req, res) => {
+  const sites = scopedSites(req);
   const templates = all('SELECT id, name FROM web_templates');
-  const webRecords = all("SELECT * FROM records WHERE kind='web'");
-  const mails = mailStats();
+  const webRecords = scopedRecords(req, '*', " AND kind='web'");
+  const mails = mailStats(req);
   ok(res, {
     overall: {
       kind: 'all',
@@ -357,7 +386,7 @@ insightApi.get('/stats/screens', (_req, res) => {
         submitted: of.filter((r) => r.submitted_at).length,
       };
     }),
-    tasks: all('SELECT * FROM mail_tasks ORDER BY created_at DESC').map((t) => {
+    tasks: scopedTasks(req).map((t) => {
       const m = taskMailStats(t.id);
       return {
         kind: 'task',
@@ -379,14 +408,14 @@ insightApi.get('/stats/screen', (req, res) => {
   if (!['all', 'site', 'task'].includes(kind)) return badRequest(res, 'kind 只能是 all / site / task');
   const id = String(req.query.id || '');
   if (kind !== 'all' && !id) return badRequest(res, '分屏必须指定 id');
-  const payload = buildScreen(kind, kind === 'all' ? null : id);
+  const payload = buildScreen(kind, kind === 'all' ? null : id, req);
   if (!payload) return notFound(res, '观测对象不存在');
   ok(res, payload);
 });
 
 // GET /insight/authorizations/:id/summary — 一次演练（= 一条授权）的汇总 JSON：范围、时间跨度、双漏斗、教育覆盖率、逐站点逐任务明细。纯读。
 // 不存在的授权回 404，而不是全 0 JSON 让操作员以为没人上钩。
-insightApi.get('/insight/authorizations/:id/summary', (req, res) => {
+insightApi.get('/insight/authorizations/:id/summary', requireAdmin, (req, res) => {
   const summary = authorizationSummary(req.params.id);
   if (!summary) return notFound(res, '授权记录不存在');
   ok(res, summary);
@@ -395,7 +424,7 @@ insightApi.get('/insight/authorizations/:id/summary', (req, res) => {
 // GET /insight/authorizations/:id/report — 甲方级演练报告（HTML，可打印/另存 PDF）。download=1 带 attachment 头缺省 inline，返回完整 HTML 不走信封。
 // samples 钳到 1-20：样本越多、掩码前的明文读取面越大。
 // 报告内容口令全掩码、邮箱部分掩码，不出现后台随机路径与管理面端口；导出写一条 report.export 审计，交付物离开本机要追得到人。
-insightApi.get('/insight/authorizations/:id/report', (req, res) => {
+insightApi.get('/insight/authorizations/:id/report', requireAdmin, (req, res) => {
   const html = buildReportHtml(req.params.id, { samples: clampSamples(req.query.samples) });
   if (html === null) return notFound(res, '授权记录不存在');
   writeAudit(req, 'report.export', {
@@ -413,7 +442,7 @@ insightApi.get('/insight/authorizations/:id/report', (req, res) => {
 
 // GET /insight/authorizations/:id/export.csv — 交付用 CSV，凭据掩码版：口令全掩码、邮箱部分掩码。与 /reports/export 分工：那份是操作员自用的取证导出（明文），这份给甲方，两份刻意并存。
 // text/csv + UTF-8 BOM + \r\n 不走信封；写一条 report.export 审计（format=csv、行数），授权不存在 404。
-insightApi.get('/insight/authorizations/:id/export.csv', (req, res) => {
+insightApi.get('/insight/authorizations/:id/export.csv', requireAdmin, (req, res) => {
   const csv = buildReportCsv(req.params.id);
   if (csv === null) return notFound(res, '授权记录不存在');
   // 行数 = CSV 行减表头那一行；用 \r\n 计数，buildReportCsv 固定用它做行尾

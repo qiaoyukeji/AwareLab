@@ -5,16 +5,24 @@ import nodemailer from 'nodemailer';
 import { config } from '../platform/settings.js';
 import { get } from '../platform/storage/rows.js';
 
+// 证书校验默认开启：关掉它等于放弃对端身份验证，链路上任何一台机器都能冒充邮件网关。
+// 内网自签网关是真实场景，所以留配置口子（config.yaml 里 mail.tls_verify: false），但要显式关、并留一行日志
+let warnedInsecure = false;
+
 /** 按 smtp_profiles 行构造 transport，不建连接，握手在首次 sendMail/verify；无缓存每次新建，改配置立即生效 */
 function connector(profile) {
+  const verifyTls = config.mail?.tls_verify !== false;
+  if (!verifyTls && !warnedInsecure) {
+    warnedInsecure = true;
+    console.warn('[mail] mail.tls_verify=false：SMTP 证书校验已关闭，请确认这是内网自签网关');
+  }
   return nodemailer.createTransport({
     host: profile.host,
     port: profile.port,
     // 库里是 0/1，不显式转布尔会被 nodemailer 按端口猜测的默认覆盖操作者的选择
     secure: Boolean(profile.secure),
     auth: { user: profile.user, pass: profile.pass },
-    // 内网自签证书邮件网关需要；对外部公网 SMTP 有中间人风险，是已知取舍
-    tls: { rejectUnauthorized: false },
+    tls: { rejectUnauthorized: verifyTls },
   });
 }
 

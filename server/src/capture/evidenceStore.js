@@ -13,6 +13,25 @@ import { pushEvent, pushFields, pushTarget } from '../notify/notifier.js';
  */
 const MAX_HISTORY_ENTRIES = 50;
 
+/**
+ * 同一枚令牌一分钟内重复推送同一条文案就不再发：图片代理、预览面板会把同一个像素重放很多次，
+ * 每放一次推一次等于把通知面变成放大器。文案变了（比如刚关掉脱敏）仍照发，那是有新信息。
+ */
+const RECENT_PUSH = new Map();
+const PUSH_DEDUPE_MS = 60_000;
+
+function pushOnce(key, text) {
+  const now = Date.now();
+  const prev = RECENT_PUSH.get(key);
+  if (prev && prev.text === text && now - prev.at < PUSH_DEDUPE_MS) return false;
+  RECENT_PUSH.set(key, { text, at: now });
+  if (RECENT_PUSH.size > 2000) {
+    for (const [k, v] of RECENT_PUSH) if (now - v.at > PUSH_DEDUPE_MS) RECENT_PUSH.delete(k);
+  }
+  pushEvent('mail_open', text);
+  return true;
+}
+
 /** events 记一条原始事件，不清理不过期；空值落 NULL 不落空串。payload 会 JSON 序列化，别塞整段请求头；SQL 异常直接上抛。 */
 export function logEvent(kind, { ref_id, token, ip, user_agent, payload }) {
   run(
@@ -192,6 +211,9 @@ export function recordFormSubmit({ siteId, token, ip, userAgent, fields, dwell, 
  */
 export function recordMailOpen({ taskId, token, ip, userAgent }) {
   const visitor = targetOf(token);
+  // 首次打开才记事件与推送：图片代理、预览面板会把同一个像素重放很多次，
+  // 以前每放一次就写一条 mail_open 事件并往外推一次通知，等于把信标变成放大器
+  const existed = token ? get('SELECT id FROM records WHERE kind=? AND token=?', ['mail', token]) : null;
   const rec = findRecord('mail', token || crypto.randomUUID(), {
     task_id: taskId ?? visitor?.task_id ?? null,
     site_id: null,
@@ -201,8 +223,10 @@ export function recordMailOpen({ taskId, token, ip, userAgent }) {
   run('UPDATE records SET last_seen_at=? WHERE id=?', [now, rec.id]);
   // WHERE 带上 task_id：token 只在任务内唯一（(task_id, token) 联合唯一），少了会连累别的任务的同名令牌
   run('UPDATE mail_recipients SET opened_at=COALESCE(opened_at,?) WHERE task_id=? AND token=?', [now, taskId ?? visitor?.task_id ?? null, token]);
-  logEvent('mail_open', { ref_id: rec.id, token, ip, user_agent: userAgent });
-  pushEvent('mail_open', `邮件打开 | 任务=${taskId ?? '未知'} | ${pushTarget(visitor?.target_email)}`);
+  if (!existed) {
+    logEvent('mail_open', { ref_id: rec.id, token, ip, user_agent: userAgent });
+  }
+  pushOnce(rec.id, `邮件打开 | 任务=${taskId ?? '未知'} | ${pushTarget(visitor?.target_email)}`);
   return rec;
 }
 

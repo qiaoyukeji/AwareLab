@@ -8,6 +8,7 @@ import { ok, badRequest, conflict, notFound } from '../platform/net/envelope.js'
 import { assertDeployment, findActive, isDomainCovered } from '../security/mandate.js';
 import { deploymentBlockReason } from '../platform/configCheck.js';
 import { writeAudit } from '../security/audit.js';
+import { ownerClause, ownsRow } from '../security/scope.js';
 import { flattenHistory } from '../capture/evidenceStore.js';
 import { isRunning, portError, siteUrl, startSite, stopSite } from '../capture/siteRegistry.js';
 import { normalizePublicUrl, publicUrlProblem } from '../capture/siteAddress.js';
@@ -22,12 +23,32 @@ function withView(site) {
   return { ...site, url: siteUrl(site), running: isRunning(site.id) };
 }
 
+/**
+ * 按 id 取站点并顺带判归属：别人的站点一律按"不存在"回 404，不回 403——
+ * 403 等于告诉调用方这个 id 真实存在，横向探测就有了信号。
+ */
+function loadOwnedSite(req, res, id) {
+  const site = get('SELECT * FROM web_sites WHERE id=?', [id]);
+  if (!site) {
+    notFound(res, '站点不存在');
+    return null;
+  }
+  if (!ownsRow(req, site)) {
+    notFound(res, '站点不存在');
+    return null;
+  }
+  return site;
+}
+
 /** GET /web-sites 全量列表不分页：每站独占一个端口，总数被 capture.port_range 钳死；两个 LEFT JOIN 不用 INNER，模板删除或授权更替后站点行仍要列出。 */
-siteApi.get('/web-sites', (_req, res) => {
+siteApi.get('/web-sites', (req, res) => {
+  // 普通用户只看自己建的：README 承诺的「只看到分给自己的部分」落在这里，管理员不加条件
+  const scope = ownerClause(req, 's');
   const rows = all(
     `SELECT s.*, t.name AS template_name, t.type AS template_type, a.scope AS auth_scope
      FROM web_sites s LEFT JOIN web_templates t ON t.id=s.template_id
-     LEFT JOIN authorizations a ON a.id=s.authorization_id ORDER BY s.created_at DESC`
+     LEFT JOIN authorizations a ON a.id=s.authorization_id WHERE 1=1${scope.sql} ORDER BY s.created_at DESC`,
+    scope.params
   ).map(withView);
   ok(res, { rows, total: rows.length });
 });
@@ -78,6 +99,8 @@ siteApi.post('/web-sites', (req, res) => {
     public_url: b.public_url ? normalizePublicUrl(b.public_url) : null,
     tls_key: b.tls_key || null,
     tls_cert: b.tls_cert || null,
+    // 归属落库：普通用户只能看见、只能操作自己建的站点；管理员不受限
+    owner_id: req.user?.id || null,
     created_at: now,
     updated_at: now,
   };
@@ -103,8 +126,8 @@ siteApi.post('/web-sites', (req, res) => {
 /** POST /web-sites/:id/start 开站把仿冒页真的挂上网络，投放动作、门禁打头：assertDeployment 403（无授权连站点 id 都不给摸）→ 404 站点不存在；startSite 幂等、close_reason 清 NULL，写 site.start 审计追到人。返回的 view 基于开站前读的那行（status 是旧值，running 已 true）。 */
 siteApi.post('/web-sites/:id/start', (req, res) => {
   if (!assertDeployment(res)) return;
-  const site = get('SELECT * FROM web_sites WHERE id=?', [req.params.id]);
-  if (!site) return notFound(res, '站点不存在');
+  const site = loadOwnedSite(req, res, req.params.id);
+  if (!site) return;
   startSite(site);
   update('web_sites', site.id, { status: 'open', close_reason: null, updated_at: nowIso() });
   writeAudit(req, 'site.start', {
@@ -117,8 +140,8 @@ siteApi.post('/web-sites/:id/start', (req, res) => {
 
 /** POST /web-sites/:id/stop 收网：掀掉监听、保留已采证据，刻意不过授权门禁（失控时第一件事是撤页面）。停一个本来没在听的站不算错，语义是确保不再监听、照样落 closed；close_reason='manual'，采集记录一条不删，返回 true（收网要快，不多查一次库）。 */
 siteApi.post('/web-sites/:id/stop', (req, res) => {
-  const site = get('SELECT * FROM web_sites WHERE id=?', [req.params.id]);
-  if (!site) return notFound(res, '站点不存在');
+  const site = loadOwnedSite(req, res, req.params.id);
+  if (!site) return;
   stopSite(site);
   // 主动收网记为 manual：续期授权时只有被平台强制下线的那批站点会自动复服
   update('web_sites', site.id, { status: 'closed', close_reason: 'manual', updated_at: nowIso() });
@@ -137,8 +160,8 @@ siteApi.post('/web-sites/:id/stop', (req, res) => {
  * open 态先 stop 再以新行 start：模板与证书编译在监听进程内部，不重开改动不生效。
  */
 siteApi.put('/web-sites/:id', (req, res) => {
-  const site = get('SELECT * FROM web_sites WHERE id=?', [req.params.id]);
-  if (!site) return notFound(res, '站点不存在');
+  const site = loadOwnedSite(req, res, req.params.id);
+  if (!site) return;
   const b = req.body || {};
   if (b.template_id !== undefined && b.template_id !== null && !get('SELECT 1 AS x FROM web_templates WHERE id=?', [b.template_id])) {
     return badRequest(res, '模板不存在');
@@ -167,8 +190,8 @@ siteApi.put('/web-sites/:id', (req, res) => {
 
 /** GET /web-sites/:id/links 站点维度回看：只列本站签发的令牌（邮件收件人链接归属在投递面）。打开次数取事件表而非记录表，一条记录会被反复钓多次、只有事件计数才准；404 站点不存在，读视图也先验父。 */
 siteApi.get('/web-sites/:id/links', (req, res) => {
-  const site = get('SELECT * FROM web_sites WHERE id=?', [req.params.id]);
-  if (!site) return notFound(res, '站点不存在');
+  const site = loadOwnedSite(req, res, req.params.id);
+  if (!site) return;
   // capture_tokens LEFT JOIN records：签了但还没人点的链接也要列出，这是回看清单不是上钩清单；r.kind='web' 限定网页侧记录，同令牌的邮件记录不属于本站口径
   const rows = all(
     `SELECT c.token,c.target_email,c.target_name,c.created_at,c.submitted_at AS tk_submitted_at,
@@ -206,8 +229,8 @@ siteApi.get('/web-sites/:id/links', (req, res) => {
 
 /** POST /web-sites/:id/links 给这张网签发一条带归属的专属投放链接（投放动作、过门禁）。手动投放（IM、内网公告、二维码）没有邮件收件人表，但归属口径要和邮件一致：令牌登记进 capture_tokens，采到的打开与提交才认得出是谁。闸门顺序 404 → assertDeployment 403（先验父，不存在的 id 不该冒充被门禁拦下）；email/name 可空即匿名链接，email 给了必须像地址。INSERT capture_tokens（site_id=本站、task_id=NULL），不写审计。 */
 siteApi.post('/web-sites/:id/links', (req, res) => {
-  const site = get('SELECT * FROM web_sites WHERE id=?', [req.params.id]);
-  if (!site) return notFound(res, '站点不存在');
+  const site = loadOwnedSite(req, res, req.params.id);
+  if (!site) return;
   if (!assertDeployment(res)) return;
   const b = req.body || {};
   const email = String(b.email || '').trim();
@@ -234,8 +257,8 @@ siteApi.post('/web-sites/:id/links', (req, res) => {
  * site.delete 审计带 evidence_kept 保留条数，事后对得上账。
  */
 siteApi.delete('/web-sites/:id', (req, res) => {
-  const site = get('SELECT * FROM web_sites WHERE id=?', [req.params.id]);
-  if (!site) return notFound(res, '站点不存在');
+  const site = loadOwnedSite(req, res, req.params.id);
+  if (!site) return;
   stopSite(site);
   run('DELETE FROM web_sites WHERE id=?', [site.id]);
   writeAudit(req, 'site.delete', {

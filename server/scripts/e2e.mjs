@@ -6,6 +6,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
+import { randomBytes } from 'node:crypto';
 import yaml from 'js-yaml';
 
 const SERVER_ROOT = path.resolve(import.meta.dirname, '..');
@@ -876,7 +877,7 @@ const UA_CASES = [
   { ua: 'curl/8.4.0', os: '未知', browser: '其他' },
 ];
 for (const c of UA_CASES) {
-  const tk = `e2ewave-ua-${c.os}-${c.browser}`;
+  const tk = `e2ewave-ua-${UA_CASES.indexOf(c)}`;
   await engagePost(CAPTURE_PORT, { ev: 'open', tk, dwell: 1, href: '/', search: '', referer: '' }, { 'user-agent': c.ua });
   const rec = await recordOf(tk);
   ok(`UA 判定 ${c.os}/${c.browser}`, rec?.feature?.os === c.os && rec?.feature?.browser === c.browser, `${rec?.feature?.os}/${rec?.feature?.browser}`);
@@ -1452,5 +1453,118 @@ ok(
   String(auditRows.find((row) => row.action === 'authorization.revoke')?.target_id)
 );
 
+// 安全回归：越权隔离、令牌形状、字段白名单、CSV 公式注入、根路径不泄露入口。
+// 这部分针对 2.5.2 报告里的几条问题，改动任何一个接口的鉴权都要先让这里过。
+
+const asUser = async (pathname, opts = {}, tk) => {
+  const res = await fetch(API + pathname, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', ...(tk ? { 'x-alab-token': tk } : {}), ...opts.headers },
+  });
+  const text = await res.text();
+  let json;
+  try { json = JSON.parse(text); } catch { json = { raw: text.slice(0, 200) }; }
+  return { status: res.status, json, text };
+};
+
+// 造一个普通用户，验证它只能看见自己建的站点与记录
+// 前面的用例连续试错会把本机 IP 锁住，这里先清掉失败计数，免得普通账号一登录就 429
+{
+  const db = new DatabaseSync(path.join(DATA_DIR, 'awarelab.db'));
+  try { db.prepare('DELETE FROM login_failures').run(); } finally { db.close(); }
+}
+const operatorName = `op-${randomBytes(3).toString('hex')}`;
+const operatorPass = 'Oper@2026x';
+await api('/users', { method: 'POST', body: JSON.stringify({ username: operatorName, password: operatorPass, role: 'user' }) }, token);
+const opLogin = await asUser('/auth/login', { method: 'POST', body: JSON.stringify({ username: operatorName, password: operatorPass }) });
+const opToken = opLogin.json?.data?.token;
+ok('普通账号能登录并拿到令牌', !!opToken, String(opLogin.status));
+
+// 普通用户自己被授权策略挡住的，是"没有有效授权"，不该是"这功能只给管理员"
+const opSite = await asUser('/web-sites', {
+  method: 'POST',
+  body: JSON.stringify({ template_id: template.json.data.id, listen_port: 0, listen_ip: '127.0.0.1' }),
+}, opToken);
+const opSiteList = await asUser('/web-sites', {}, opToken);
+ok(
+  '普通用户能看到站点页，且列表里没有别人建的站',
+  opSiteList.status === 200 && (opSiteList.json?.data?.rows || []).length === 0,
+  `${opSiteList.status}/${(opSiteList.json?.data?.rows || []).length}`
+);
+ok(
+  '普通用户建站若被拒，理由是授权而不是权限',
+  opSite.status === 200 || (opSite.status === 403 && String(opSite.json?.message || opSite.json?.error || '').includes('授权')),
+  `${opSite.status} ${JSON.stringify(opSite.json).slice(0, 80)}`
+);
+const opRecords = await asUser('/records?page=1&page_size=50', {}, opToken);const opRows = opRecords.json?.data?.rows || [];
+ok(
+  '普通账号看不到别人的上钩记录',
+  opRecords.status === 200 && opRows.length === 0,
+  `rows=${opRows.length}`
+);
+const adminRecords = await api('/records?page=1&page_size=1', {}, token);
+const adminRecordId = adminRecords.json?.data?.rows?.[0]?.id;
+const peek = adminRecordId ? await asUser(`/records/${adminRecordId}`, {}, opToken) : { status: 0 };
+ok('按 id 直接读别人的记录也只回 404', peek.status === 404, String(peek.status));
+const revealOther = adminRecordId ? await asUser(`/records/${adminRecordId}/reveal`, { method: 'POST' }, opToken) : { status: 0 };
+ok('拿别人的记录 id 也解不出明文', revealOther.status === 404, String(revealOther.status));
+
+const opExport = await asUser('/reports/export?kind=web', {}, opToken);
+ok(
+  '导出只给自己那一份（没有记录时只剩表头）',
+  opExport.status === 200 && (opExport.text.match(/\r\n/g) || []).length <= 2,
+  `${opExport.status}/${opExport.text.length}B`
+);
+
+const opAuth = await asUser('/authorizations', {
+  method: 'POST',
+  body: JSON.stringify({
+    scope: '越权测试', contact: 't', start_at: new Date().toISOString(),
+    end_at: new Date(Date.now() + 86400e3).toISOString(), allowed_hosts: ['evil.example'],
+    pledge: '我承诺仅在授权范围内使用本平台开展安全意识演练',
+  }),
+}, opToken);
+ok('普通账号不能自己登记授权（否则能把域名白名单改掉）', opAuth.status === 403, String(opAuth.status));
+ok('普通账号不能读操作审计', (await asUser('/audit-logs', {}, opToken)).status === 403);
+ok('普通账号不能改平台设置', (await asUser('/settings', {}, opToken)).status === 403);
+ok('普通账号不能触发维护任务', (await asUser('/maintenance/run', { method: 'POST' }, opToken)).status === 403);
+
+// 根路径不再 302 到随机管理入口
+const rootResp = await fetch(`${BASE}/`, { redirect: 'manual' });
+const rootLocation = rootResp.headers.get('location') || '';
+ok('根路径回 404 且不带 Location', rootResp.status === 404 && !rootLocation.includes(PANEL), `${rootResp.status} ${rootLocation}`);
+
+// 信标面：未知令牌只回像素，不落库
+const before = (await api('/records?page=1&page_size=1', {}, token)).json?.data?.total;
+await fetch(`${BASE}/alab/v2/pixel?tk=not-a-real-token-9f8e7d`);
+const after = (await api('/records?page=1&page_size=1', {}, token)).json?.data?.total;
+ok('未知令牌打开像素不产生记录', before === after, `${before}→${after}`);
+const jumbo = 'x'.repeat(4000);
+await fetch(`${BASE}/alab/v2/pixel?tk=${jumbo}`);
+const afterJumbo = (await api('/records?page=1&page_size=1', {}, token)).json?.data?.total;
+ok('超长令牌同样不落库', after === afterJumbo, `${after}→${afterJumbo}`);
+
+// CSV 公式注入：直接往库里塞一条以 = 开头的字段，再走导出接口验证被加了单引号
+{
+  const dbPath = path.join(DATA_DIR, 'awarelab.db');
+  const db = new DatabaseSync(dbPath);
+  try {
+    const id = `csv-${randomBytes(6).toString('hex')}`;
+    const now = new Date().toISOString();
+    db.prepare(
+      'INSERT INTO records (id,kind,site_id,token,target_email,first_seen_at,last_seen_at,form_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)'
+    ).run(id, 'web', null, `csvtok-${randomBytes(4).toString('hex')}`, "=cmd|' /c calc'!A1", now, now,
+      JSON.stringify({ fields: [{ name: 'username', value: 'admin' }] }), now);
+    const csvInjected = await api('/reports/export?kind=web', {}, token);
+    ok(
+      'CSV 里以 = 开头的值被中和',
+      csvInjected.text.includes(`"'=cmd`) && !csvInjected.text.includes(`"=cmd`),
+      String(csvInjected.text.slice(0, 60))
+    );
+    db.prepare('DELETE FROM records WHERE id=?').run(id);
+  } finally {
+    db.close();
+  }
+}
 console.log(lines.join('\n'));
 console.log(`\n共 ${lines.length} 项，失败 ${failures} 项，跳过 ${lines.filter((l) => l.startsWith('SKIP')).length} 项`);

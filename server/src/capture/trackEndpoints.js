@@ -10,6 +10,7 @@ import { clientIp } from '../platform/net/clientIp.js';
 import { findActive, isHostAuthorized } from '../security/mandate.js';
 import { recordMailClick, recordMailOpen, resolveToken } from './evidenceStore.js';
 import { renderNoticePage } from './pageCompiler.js';
+import { rateAllowed } from './rateGate.js';
 
 // 透明 1x1：打开像素不论令牌真假都回这张图，状态码与体积不泄漏 tk 是否有效
 export const GIF_1X1 = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
@@ -17,9 +18,19 @@ export const GIF_1X1 = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAAB
 // 跳转目标长度上限：URL 参数由邮件客户端拼出，超长串既没有合法站点会长成那样，也不该让一次请求吃满 CPU
 const MAX_TARGET_LENGTH = 4096;
 
+// 本平台签发的令牌是 crypto.randomUUID()；形状不对的直接当匿名，不让任意字符串占一条记录
+// 令牌形状：拒绝任意长串与非常规字符，真实令牌是 36 位 UUID
+const TOKEN_SHAPE = /^[A-Za-z0-9_-]{6,64}$/;
+
+// 像素与跳转各自限速：一条邮件最多被几十个人点开，同一来源地址每分钟几百次已经是异常回放
+const PIXEL_PER_IP_MINUTE = 300;
+const PIXEL_PER_TOKEN_MINUTE = 60;
+const TRACE_PER_IP_MINUTE = 120;
+const TRACE_PER_TOKEN_MINUTE = 60;
+
 /** 收件人令牌 → 任务归属；令牌不认识就给 null，像素照常回图，点击照常不计数 */
 function visitorOf(token) {
-  if (!token) return null;
+  if (!token || !TOKEN_SHAPE.test(token)) return null;
   try {
     return resolveToken(token) || null;
   } catch {
@@ -28,20 +39,22 @@ function visitorOf(token) {
 }
 
 /**
- * 邮件打开像素：有 tk 就记一次 mail_open，没有也回图（网关预取与图片代理重试都会打到这里）。
+ * 邮件打开像素：令牌是平台签发且未超速才记一次 mail_open，其余情况只回图。
  * Cache-Control 必须 no-store：缓存过的像素在重开邮件时不再回源，打开数会少算。
  */
 export function servePixel(req, res, url) {
   const token = url.searchParams.get('tk');
-  if (token) {
+  const ip = clientIp(req);
+  if (
+    token &&
+    rateAllowed(`p:i:${ip}`, PIXEL_PER_IP_MINUTE) &&
+    rateAllowed(`p:t:${token}`, PIXEL_PER_TOKEN_MINUTE)
+  ) {
+    // 归属只认服务端签发的令牌：query 里的 task 谁都能写，拿它建记录等于给外人一个造数据的口子
     const visitor = visitorOf(token);
-    // 任务归属只认服务端签发的令牌；query 里的 task 仅在令牌没有任务时作为兜底
-    recordMailOpen({
-      taskId: visitor?.task_id ?? url.searchParams.get('task') ?? null,
-      token,
-      ip: clientIp(req),
-      userAgent: req.headers['user-agent'] || '',
-    });
+    if (visitor) {
+      recordMailOpen({ taskId: visitor.task_id ?? null, token, ip, userAgent: req.headers['user-agent'] || '' });
+    }
   }
   res.writeHead(200, {
     'Content-Type': 'image/gif',
@@ -62,10 +75,12 @@ export function serveTrace(req, res, url) {
   const ip = clientIp(req);
   const userAgent = req.headers['user-agent'] || '';
 
-  if (token) {
+  if (token && rateAllowed(`tr:i:${ip}`, TRACE_PER_IP_MINUTE) && rateAllowed(`tr:t:${token}`, TRACE_PER_TOKEN_MINUTE)) {
     const visitor = visitorOf(token);
-    recordMailOpen({ taskId: visitor?.task_id ?? null, token, ip, userAgent });
-    recordMailClick({ taskId: visitor?.task_id ?? null, token, ip, userAgent, url: target });
+    if (visitor) {
+      recordMailOpen({ taskId: visitor.task_id ?? null, token, ip, userAgent });
+      recordMailClick({ taskId: visitor.task_id ?? null, token, ip, userAgent, url: target });
+    }
   }
 
   if (typeof target === 'string' && target.length <= MAX_TARGET_LENGTH && /^https?:\/\//i.test(target)) {

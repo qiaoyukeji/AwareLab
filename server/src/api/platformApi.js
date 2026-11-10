@@ -202,7 +202,7 @@ platformApi.put('/settings/:key', requireAdmin, (req, res) => {
 });
 
 /** 推送/外发流水，分页倒序；request 列写入时已 maskUrl 换星可原样给前端，取证导出借这张表记 csv_export 故兼作对账。 */
-platformApi.get('/push-logs', (req, res) => {
+platformApi.get('/push-logs', requireAdmin, (req, res) => {
   const { page, page_size } = paginate(req.query);
   ok(res, pagedRows('push_logs', '', [], page, page_size));
 });
@@ -255,6 +255,33 @@ function cloneScopeProblem(siteName, prompt) {
 }
 
 /** 模型服务地址：公网只走 https，本机回环可明文 http；外呼带 Authorization 头，明文 http 会让它被链路读取。 */
+/**
+ * 模型服务地址门禁：本机回环放行（本地推理服务是正常用法），其余一律要 https 且不许指向内网。
+ * 只校验协议会让「https://10.0.0.5」这种地址通过——那就是一次带着 API Key 的内网探测。
+ */
+function privateHost(host) {
+  const raw = String(host || '').replace(/^\[|\]$/g, '').toLowerCase();
+  if (!raw) return false;
+  if (raw === 'localhost' || raw.endsWith('.localhost') || raw.endsWith('.local')) return true;
+  // IPv4 字面量：10/8、172.16/12、192.168/16、169.254/16（含云元数据 169.254.169.254）、100.64/10（运营商级 NAT）
+  const v4 = raw.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    if (a === 10) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    if (a === 0) return true;
+  }
+  // IPv6 字面量：fc00::/7 唯一本地、fe80::/10 链路本地
+  if (raw.includes(':')) {
+    if (/^f[cd][0-9a-f]{2}:/.test(raw)) return true;
+    if (/^fe[89ab][0-9a-f]:/.test(raw)) return true;
+  }
+  return false;
+}
+
 function providerUrlProblem(raw) {
   let parsed;
   try {
@@ -262,17 +289,21 @@ function providerUrlProblem(raw) {
   } catch {
     return `模型服务地址不是合法 URL：${raw}`;
   }
-  if (parsed.protocol === 'https:') return null;
+  const host = parsed.hostname;
+  const loopback = host === '127.0.0.1' || host === 'localhost' || host === '::1';
+  if (parsed.protocol === 'https:') {
+    // 云端厂商都是 https；这里只挡内网与链路本地地址，公网域名照旧放行
+    return privateHost(host) && !loopback ? `模型服务地址 ${host} 指向内网，平台不允许把 API Key 发往内网地址` : null;
+  }
   if (parsed.protocol === 'http:') {
-    const host = parsed.hostname;
-    if (host === '127.0.0.1' || host === 'localhost' || host === '::1') return null;
+    if (loopback) return null;
     return `模型服务地址 ${host} 走明文 http，API Key 会裸奔在链路上；请改用 https，或用本机回环地址做本地联调`;
   }
   return `模型服务地址协议不支持：${parsed.protocol}`;
 }
 
 /** 一键仿站，不写库。门禁顺序 cloneScopeProblem（无授权 403、名单外主机或员工邮箱 400）→ 缺 api_key 400 → providerUrlProblem 400；上游非 2xx 转 502，异常/超时/回包非 JSON 回 500。 */
-platformApi.post('/ai/generate', async (req, res) => {
+platformApi.post('/ai/generate', requireAdmin, async (req, res) => {
   const siteName = req.body?.site_name || '登录页';
   const fields = Array.isArray(req.body?.fields) ? req.body.fields.filter(Boolean) : [];
   const prompt = req.body?.prompt?.trim() || buildPrompt(siteName, fields);
@@ -306,7 +337,8 @@ platformApi.post('/ai/generate', async (req, res) => {
     });
     const data = await upstream.json();
     if (!upstream.ok) {
-      res.status(502).json({ code: 502, message: `模型服务返回 ${upstream.status}`, data });
+      // 不回显上游响应体：它可能带着内网地址、配额信息，甚至把请求头原样抄回来
+      res.status(502).json({ code: 502, message: `模型服务返回 ${upstream.status}，请检查厂商配置与配额` });
       return;
     }
     const content = data?.choices?.[0]?.message?.content || '';
@@ -339,7 +371,7 @@ platformApi.get('/maintenance/status', (_req, res) => {
 });
 
 /** 手动跑一次保留期清理。dry_run 只算不删也不写审计，真删写 plan、applied 两条 data.prune，清理不动 audit_logs；actor 取当前用户、ip 取 clientIp，定时器那条才是 null。清理不是投放动作，不受投放门禁。 */
-platformApi.post('/maintenance/run', (req, res) => {
+platformApi.post('/maintenance/run', requireAdmin, (req, res) => {
   try {
     const summary = runRetentionSweep({
       actor: req.session?.username || null,

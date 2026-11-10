@@ -11,6 +11,8 @@ import { flattenHistory } from '../capture/evidenceStore.js';
 import { isRunning } from '../capture/siteRegistry.js';
 import { writeAudit } from '../security/audit.js';
 import { isSecretField, maskHistory } from '../security/secretMask.js';
+import { isAdmin, ownerClause, ownsRecord, viewerId } from '../security/scope.js';
+import { requireAdmin } from '../security/session.js';
 import { DISPOSITION_LABEL, dispositionOf, educationCoverage } from '../insight/drillReport.js';
 
 export const evidenceApi = express.Router();
@@ -34,10 +36,40 @@ function toView(row) {
   };
 }
 
+/**
+ * 记录归属条件：records 没有 owner_id，归属沿 site_id / task_id 追到站点与邮件任务。
+ * 管理员不加条件；普通用户只认自己名下站点或任务产生的记录；会话缺 user_id 时一条都不给。
+ */
+function recordScope(req) {
+  if (isAdmin(req)) return { cond: null, params: [] };
+  const uid = viewerId(req);
+  if (!uid) return { cond: '1=0', params: [] };
+  return {
+    cond: "(site_id IN (SELECT id FROM web_sites WHERE owner_id=?) OR task_id IN (SELECT id FROM mail_tasks WHERE owner_id=?))",
+    params: [uid, uid],
+  };
+}
+
+/** 按 id 取记录并判归属；别人的记录按"不存在"回 404，避免用 403 泄漏 id 是否真实存在。 */
+function ownedRecord(req, res, id = req.params.id) {
+  const row = get('SELECT * FROM records WHERE id=?', [id]);
+  if (!row || !ownsRecord(req, row, get)) {
+    notFound(res, '记录不存在');
+    return null;
+  }
+  return row;
+}
+
 /** 拼 /records 的过滤条件（WHERE 片段 + 占位参数 + 错误原因）；值一律走 ? 占位符绑定，LIKE 只给值包 %，error 非空时调用方直接 400 */
-function buildFilter(query) {
+function buildFilter(query, req) {
   const cond = [];
   const params = [];
+  // 归属条件放在最前：普通用户只能看到自己名下站点/任务产生的记录，管理员不加这一条
+  const scope = recordScope(req);
+  if (scope.cond) {
+    cond.push(scope.cond);
+    params.push(...scope.params);
+  }
   if (query.kind) {
     cond.push('kind=?');
     params.push(query.kind);
@@ -74,7 +106,7 @@ function buildFilter(query) {
 
 /** GET /records — 上钩记录分页列表，过滤见 buildFilter；每行过 toView，凭据字段已是掩码，原始 JSON 串不外抛 */
 evidenceApi.get('/records', (req, res) => {
-  const { where, params, error } = buildFilter(req.query);
+  const { where, params, error } = buildFilter(req.query, req);
   if (error) return badRequest(res, error);
   const { page, page_size } = paginate(req.query);
   const data = pagedRows('records', where, params, page, page_size);
@@ -146,7 +178,8 @@ function seal(group) {
  * GET /records/groups — 按载体分组的全量看板：网页组=kind='web' 且 site_id 命中，邮件组=task_id 命中（邮件打开与后续网页提交同属一条链）。
  * 分组口径必须与 /records 的过滤一致，看板上的数字点进去就是那一屏；已删除的站点与任务也照样列组，收网删的是监听配置不是已采到的证据。
  */
-evidenceApi.get('/records/groups', (_req, res) => {
+evidenceApi.get('/records/groups', (req, res) => {
+  const scope = recordScope(req);
   // 长表先聚成 {token:{kind:n}}，后面按令牌查计数 O(1)
   const tally = new Map();
   for (const row of all(EVENT_TALLY)) {
@@ -154,12 +187,21 @@ evidenceApi.get('/records/groups', (_req, res) => {
     bucket[row.kind] = row.n;
     tally.set(row.token, bucket);
   }
-  // 只取聚合要的列，整行会把 feature_json 等大字段一起背回来
-  const records = all('SELECT kind,site_id,task_id,token,submitted_at,last_seen_at,created_at,disposition,form_json FROM records');
+  // 只取聚合要的列，整行会把 feature_json 等大字段一起背回来；归属条件与 /records 同一口径，
+  // 否则看板会把别人的站点列成零组、点进去却是空的
+  const records = all(
+    `SELECT kind,site_id,task_id,token,submitted_at,last_seen_at,created_at,disposition,form_json FROM records${scope.cond ? ` WHERE ${scope.cond}` : ''}`,
+    scope.params
+  );
 
-  // 站点 LEFT JOIN 模板：模板可能已删，删了也要列组；任务全列
-  const sites = all('SELECT s.*, t.name AS template_name FROM web_sites s LEFT JOIN web_templates t ON t.id=s.template_id ORDER BY s.created_at DESC');
-  const tasks = all('SELECT * FROM mail_tasks ORDER BY created_at DESC');
+  // 站点 LEFT JOIN 模板：模板可能已删，删了也要列组；任务全列。两者都按归属裁一遍
+  const siteScope = ownerClause(req, 's');
+  const taskScope = ownerClause(req, 'mail_tasks');
+  const sites = all(
+    `SELECT s.*, t.name AS template_name FROM web_sites s LEFT JOIN web_templates t ON t.id=s.template_id WHERE 1=1${siteScope.sql} ORDER BY s.created_at DESC`,
+    siteScope.params
+  );
+  const tasks = all(`SELECT * FROM mail_tasks WHERE 1=1${taskScope.sql} ORDER BY created_at DESC`, taskScope.params);
   // 收件人总数按任务 GROUP BY：邮件组的分母，与上钩数两码事
   const recipients = new Map(all('SELECT task_id,COUNT(*) AS n FROM mail_recipients GROUP BY task_id').map((r) => [r.task_id, r.n]));
 
@@ -266,8 +308,9 @@ evidenceApi.get('/records/groups', (_req, res) => {
  * 先 fs.existsSync 再 sendFile，文件可能被手工清理；缺文件与记录不存在回同一句 404，不给枚举 id 留信号。
  */
 evidenceApi.get('/records/:id/screenshot', (req, res) => {
-  const row = get('SELECT * FROM records WHERE id=?', [req.params.id]);
-  if (!row?.screenshot_path || !fs.existsSync(row.screenshot_path)) return notFound(res, '截图不存在');
+  const row = ownedRecord(req, res);
+  if (!row) return;
+  if (!row.screenshot_path || !fs.existsSync(row.screenshot_path)) return notFound(res, '截图不存在');
   return res.sendFile(row.screenshot_path);
 });
 
@@ -276,8 +319,8 @@ evidenceApi.get('/records/:id/screenshot', (req, res) => {
  * context 里重复给一份 site_label 与 target_email；id 不存在回 404，不拿空对象谎报成功。
  */
 evidenceApi.get('/records/:id', (req, res) => {
-  const row = get('SELECT * FROM records WHERE id=?', [req.params.id]);
-  if (!row) return notFound(res, '记录不存在');
+  const row = ownedRecord(req, res);
+  if (!row) return;
   // 归属链逐跳回查：记录→站点/任务→模板；站点与任务都可能已删，查不到给 null 而不是报错
   const site = row.site_id ? get('SELECT * FROM web_sites WHERE id=?', [row.site_id]) : null;
   const task = row.task_id ? get('SELECT * FROM mail_tasks WHERE id=?', [row.task_id]) : null;
@@ -305,8 +348,8 @@ evidenceApi.get('/records/:id', (req, res) => {
  * 先查再删，删不存在的 id 回 404；evidence.delete 进 audit_logs。
  */
 evidenceApi.delete('/records/:id', (req, res) => {
-  const row = get('SELECT * FROM records WHERE id=?', [req.params.id]);
-  if (!row) return notFound(res, '记录不存在');
+  const row = ownedRecord(req, res);
+  if (!row) return;
   run('DELETE FROM records WHERE id=?', [req.params.id]);
   writeAudit(req, 'evidence.delete', {
     targetKind: 'record',
@@ -339,8 +382,8 @@ function dispositionProblem(body) {
 evidenceApi.patch('/records/:id', (req, res) => {
   const problem = dispositionProblem(req.body);
   if (problem) return badRequest(res, problem);
-  const row = get('SELECT * FROM records WHERE id=?', [req.params.id]);
-  if (!row) return notFound(res, '记录不存在');
+  const row = ownedRecord(req, res);
+  if (!row) return;
   const from = dispositionOf(row);
   // 备注没给就保留原值，单条标记只改状态不清说明
   const note = req.body.note == null ? (row.note ?? null) : req.body.note;
@@ -389,10 +432,11 @@ evidenceApi.post('/records/disposition', (req, res) => {
  * 凭据字段每次查看都写 audit_logs 的 record.secret_reveal，detail 带字段名供本机台账追责，与对外报告只报数量不报字段名（secretMask.js）不冲突。同名字段多次提交取最后一次的值。
  */
 evidenceApi.post('/records/:id/reveal', (req, res) => {
+  // 先认归属再谈字段：不是自己名下的记录，连"有没有这个字段"都不该回
+  const row = ownedRecord(req, res);
+  if (!row) return;
   const field = String(req.body?.field ?? '').trim();
   if (!field) return badRequest(res, '请指定要查看明文的字段名');
-  const row = get('SELECT * FROM records WHERE id=?', [req.params.id]);
-  if (!row) return notFound(res, '记录不存在');
   // 读库里的原始 form_json 而不是 toView 的掩码副本，reveal 要的就是原值
   const hit = flattenHistory(row.form_json)
     .filter((item) => item.name === field)
@@ -408,8 +452,16 @@ evidenceApi.post('/records/:id/reveal', (req, res) => {
 
 // 列序与下面导出循环里拼的字段一一对应，改一处要改另一处
 const CSV_HEADER = ['记录UUID', '令牌', '目标邮箱', '站点/任务', '首次打开', '提交时间', '停留秒', 'IP', '系统', '浏览器', '处置状态', '采集内容'];
-/** CSV 单元格转义：整体加引号、内部双引号翻倍、换行压成空格，免得值里的逗号冲散行结构 */
-const csvCell = (value) => `"${String(value ?? '').replace(/"/g, '""').replace(/\r?\n/g, ' ')}"`;
+/**
+ * CSV 单元格转义：整体加引号、内部双引号翻倍、换行压成空格，免得值里的逗号冲散行结构；
+ * 以 = + - @ 或制表符开头的值再前置一个单引号——Excel 会把这类单元格当公式执行，
+ * 攻击者只要把「=HYPERLINK(...)」填进表单就能在操作员打开 CSV 时外带数据。
+ */
+const csvCell = (value) => {
+  let text = String(value ?? '').replace(/\r?\n/g, ' ');
+  if (/^[=+\-@\t\r]/.test(text)) text = `'${text}`;
+  return `"${text.replace(/"/g, '""')}"`;
+};
 
 /**
  * GET /reports/export?kind=web|mail — 全量证据 CSV，每行一个终端的上钩轨迹，不分页；
@@ -421,7 +473,12 @@ evidenceApi.get('/reports/export', (req, res) => {
   // 文件名直接由 kind 拼出，任意值能把字符塞进 Content-Disposition
   const kind = req.query.kind || 'web';
   if (kind !== 'web' && kind !== 'mail') return badRequest(res, '导出类型只支持 web（网页）或 mail（邮件）');
-  const rows = all('SELECT * FROM records WHERE kind=? ORDER BY created_at DESC', [kind]);
+  // 导出同样按归属裁剪：普通用户只能导出自己名下站点/任务产生的记录，不能整库带走
+  const scope = recordScope(req);
+  const rows = all(
+    `SELECT * FROM records WHERE kind=?${scope.cond ? ` AND ${scope.cond}` : ''} ORDER BY created_at DESC`,
+    [kind, ...scope.params]
+  );
   const lines = [CSV_HEADER.map(csvCell).join(',')];
   for (const row of rows) {
     // 特征列取三个已分类字段，UA 归类在采集落库时做过，导出不重算
@@ -463,7 +520,7 @@ evidenceApi.get('/reports/export', (req, res) => {
  * GET /audit-logs — 操作审计只读、时间倒序；没有更新与删除接口是刻意的，事后能改的不叫审计。
  * action 精确匹配动作类别，actor 按操作人账号，page_size 由 paginate 钳到 200，detail 解成对象再回。
  */
-evidenceApi.get('/audit-logs', (req, res) => {
+evidenceApi.get('/audit-logs', requireAdmin, (req, res) => {
   const cond = [];
   const params = [];
   if (req.query.action) {
