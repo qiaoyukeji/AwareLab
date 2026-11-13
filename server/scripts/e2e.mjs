@@ -1566,5 +1566,72 @@ ok('超长令牌同样不落库', after === afterJumbo, `${after}→${afterJumbo
     db.close();
   }
 }
+// 沙箱转正式的入队口径 + 单封预览/下载：三条都是 v2.5.4 修的
+{
+  // 前面的用例会把授权判过窗口/吊销，这里补一条自己的，别借别人的状态
+  const freshPledge = await api('/authorizations/pledge', {}, token);
+  const freshAuth = await api(
+    '/authorizations',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        scope: '回归自测 站点组',
+        contact: 'soc@example.com',
+        start_at: new Date(Date.now() - 3600_000).toISOString(),
+        end_at: new Date(Date.now() + 2 * 86400_000).toISOString(),
+        allowed_hosts: ['#ip'],
+        pledge: freshPledge.json?.data?.pledge,
+        note: 'e2e-v254',
+      }),
+    },
+    token
+  );
+  ok('为回归用例补一条生效授权', freshAuth.status === 200, `${freshAuth.status} ${freshAuth.json?.message || ''}`);
+
+  // 拿一个必然连不上的端口做发信通道：真发一定每封失败，但能证明队列里有东西
+  const deadProfile = await api(
+    '/smtp-profiles',
+    { method: 'POST', body: JSON.stringify({ name: '自测-关闭端口', host: '127.0.0.1', port: 1, secure: false, user: 'drill@corp.example', pass: 'x', from_addr: 'drill@corp.example' }) },
+    token
+  );
+  const flipTask = await api(
+    '/mail-tasks',
+    { method: 'POST', body: JSON.stringify({ title: '沙箱转正式回归', subject: '回归邮件', body_html: '<p>您好，请核对。</p>', dry_run: true, send_interval_ms: 0 }) },
+    token
+  );
+  const flipId = flipTask.json?.data?.id;
+  await api(`/mail-tasks/${flipId}/recipients`, { method: 'POST', body: JSON.stringify({ text: 'zhaoliu@corp.example,赵六' }) }, token);
+  const firstRound = await api(`/mail-tasks/${flipId}/send`, { method: 'POST' }, token);
+  ok('回归任务先沙箱发一轮', firstRound.json?.data?.sent === 1 && firstRound.json?.data?.dry_run === true, JSON.stringify(firstRound.json?.data));
+
+  // 预览与 .eml 下载都在沙箱轮之后、改用真发之前验，此时产物刚写盘
+  const flipDetail = await api(`/mail-tasks/${flipId}`, {}, token);
+  const flipRecipient = flipDetail.json?.data?.recipients?.[0];
+  const preview = await api(`/mail-tasks/${flipId}/recipients/${flipRecipient?.id}/preview`, {}, token);
+  ok(
+    '单封预览带主题与正文',
+    preview.status === 200 && preview.json?.data?.subject === '回归邮件' && /您好，请核对/.test(preview.json?.data?.html || ''),
+    `${preview.status} ${preview.json?.data?.subject}`
+  );
+  ok('单封预览标明 .eml 已落盘', !!preview.json?.data?.sandbox_file, String(preview.json?.data?.sandbox_file));
+  const emlDownload = await api(`/mail-tasks/${flipId}/recipients/${flipRecipient?.id}/eml`, {}, token);
+  ok(
+    '单封 .eml 能直接下载',
+    emlDownload.status === 200 && /X-Sandbox:\s*true/i.test(emlDownload.text || ''),
+    `${emlDownload.status} ${(emlDownload.text || '').length}B`
+  );
+
+  // 关沙箱并绑定发信账号：这一步之后名册里只剩 sandboxed，旧逻辑会在这里回"没有可投递的对象"
+  const flipped = await api(`/mail-tasks/${flipId}`, { method: 'PUT', body: JSON.stringify({ dry_run: false, smtp_profile_id: deadProfile.json?.data?.id }) }, token);
+  ok('任务可切到正式发送', flipped.json?.data?.dry_run === false, String(flipped.json?.data?.dry_run));
+  const realRound = await api(`/mail-tasks/${flipId}/send`, { method: 'POST' }, token);
+  ok(
+    '沙箱轮留下的收件人转正式时重新入队',
+    realRound.status === 200 && realRound.json?.data?.total === 1,
+    `${realRound.status} ${JSON.stringify(realRound.json?.data)}`
+  );
+  ok('连接被拒后该收件人记为失败', (realRound.json?.data?.failed ?? 0) === 1, JSON.stringify(realRound.json?.data));
+}
+
 console.log(lines.join('\n'));
 console.log(`\n共 ${lines.length} 项，失败 ${failures} 项，跳过 ${lines.filter((l) => l.startsWith('SKIP')).length} 项`);

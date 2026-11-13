@@ -7,9 +7,78 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="theme-color" content="#0f766e" />
     <script>window.__ALAB_PANEL__ = "__ALAB_PANEL_VALUE__";</script>
+    <!-- 首屏兜底样式写死在这里：JS 或 CSS 包没取到时，页面仍然要有一块能看、能点的东西 -->
+    <style>
+      .boot-fallback {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: #f4f7f8;
+        font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+        color: #24323d;
+      }
+      .boot-card {
+        max-width: 520px;
+        background: #fff;
+        border: 1px solid #dbe4ea;
+        border-radius: 10px;
+        padding: 28px 30px;
+        box-shadow: 0 12px 30px rgba(16, 42, 56, 0.08);
+      }
+      .boot-card h1 { margin: 0 0 10px; font-size: 18px; }
+      .boot-card p { margin: 0 0 14px; font-size: 13px; line-height: 1.7; color: #4d5f6d; }
+      .boot-actions { display: flex; gap: 10px; margin-bottom: 14px; }
+      .boot-btn {
+        display: inline-block;
+        padding: 7px 16px;
+        border: 1px solid #cfdae1;
+        border-radius: 6px;
+        font-size: 13px;
+        color: #24323d;
+        text-decoration: none;
+      }
+      .boot-btn.primary { background: #0f766e; border-color: #0f766e; color: #fff; }
+      .boot-hint { margin: 0; font-size: 12px; color: #7b8b98; }
+      .boot-hint code { background: #f0f4f6; border-radius: 3px; padding: 0 3px; }
+    </style>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <!-- 静态兜底：Vue 挂载成功后会把这段整个替换掉，不会残留；没挂上则由下面的内联脚本揭示 -->
+      <div id="boot-fallback" class="boot-fallback" hidden>
+        <div class="boot-card">
+          <h1>界面没有加载起来</h1>
+          <p>多半是前端资源没取到，或者会话已经失效。先回首页重试一次，多数情况点一下就好。</p>
+          <div class="boot-actions">
+            <a class="boot-btn primary" href="#/console" onclick="location.reload()">回到首页</a>
+            <a class="boot-btn" href="#/login">去登录页</a>
+          </div>
+          <p class="boot-hint">反复出现时，看一眼后台窗口的最后几行报错，或确认 <code>web/dist</code> 是最新构建。</p>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.js"></script>
+    <script>
+      // 资源层失败（脚本 404、chunk 加载失败）时模块入口根本不会执行，只能靠这段普通脚本兜。
+      (function () {
+        function reveal() {
+          var app = document.getElementById('app');
+          if (!app || app.dataset.mounted === '1') return;
+          var box = document.getElementById('boot-fallback');
+          if (box) box.hidden = false;
+        }
+        window.addEventListener(
+          'error',
+          function (e) {
+            if (e.target && (e.target.tagName === 'SCRIPT' || e.target.tagName === 'LINK')) reveal();
+          },
+          true
+        );
+        setTimeout(reveal, 4000);
+      })();
+    </script>
   </body>
 </html>

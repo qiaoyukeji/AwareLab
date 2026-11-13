@@ -266,8 +266,10 @@
           <el-table-column label="提交" width="170">
             <template #default="{ row }">{{ row.submitted_at ? ts(row.submitted_at, { seconds: true }) : '-' }}</template>
           </el-table-column>
-          <el-table-column label="操作" width="90" fixed="right">
+          <el-table-column label="操作" width="130" fixed="right">
             <template #default="{ row }">
+              <!-- 预览：把这一封按任务当前配置现渲染，沙箱轮还会给出已落盘 .eml 的下载口 -->
+              <el-button link type="primary" @click="openPreview(row)">预览</el-button>
               <!-- 单人补发：只把这一位拨回 pending，不重过整张队列 -->
               <el-button link type="primary" @click="resend(row)">重发</el-button>
             </template>
@@ -292,6 +294,30 @@
       </div>
     </div>
   </el-drawer>
+
+  <!-- 单封预览：正文由服务端按任务当前配置现渲染，iframe 里 sandbox 空集，脚本与表单都不执行 -->
+  <el-dialog v-model="previewDlg" title="这一封长什么样" width="760px" destroy-on-close>
+    <div class="lab-stack">
+      <div class="lab-kv">
+        <span>收件人：<b>{{ previewData.to }}</b></span>
+        <span>
+          状态：
+          <span class="lab-chip" :class="STATUS_CHIP[previewData.status] || ''">{{ STATUS_LABEL[previewData.status] || previewData.status }}</span>
+        </span>
+      </div>
+      <div class="lab-kv">
+        <span>主题：<b>{{ previewData.subject }}</b></span>
+      </div>
+      <iframe class="mail-preview" :srcdoc="previewData.html" sandbox="" title="邮件正文预览" />
+      <p class="lab-hint is-mute">
+        正文按任务当前配置现渲染，改完任务再点预览就是新的；沙箱轮真正落盘的那一封可以用「下载 .eml」取走，用邮件客户端打开能看到原始头部。
+      </p>
+    </div>
+    <template #footer>
+      <el-button @click="previewDlg = false">关闭</el-button>
+      <el-button type="primary" :disabled="!previewData.sandbox_file" @click="downloadEml">下载 .eml</el-button>
+    </template>
+  </el-dialog>
 
   <!-- 真实发送确认弹窗：非沙箱任务的所有投放入口必经这里，须手输服务端返回的待投人数并等满 5 秒倒计时。
        沙箱不进弹窗，各入口按 dry_run 分流，刻意不对称 -->
@@ -347,7 +373,7 @@
 import { ref, reactive, computed, onMounted } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Plus, Refresh } from '@element-plus/icons-vue';
-import http from '../../api/client';
+import http, { download } from '../../api/client';
 import LabPane from '../../ui/LabPane.vue';
 import RichEditor from '../../components/RichEditor.vue';
 // 详情里要带参调用，别名 ts 防止整行过长。
@@ -363,6 +389,10 @@ const TASK_CHIP = { draft: 'is-warn', sending: 'is-accent', sent: 'is-ok', parti
 // STATUS_*：sandboxed 是沙箱落 .eml 成功，与 sent 分开配色，免得和真邮件混。
 const STATUS_LABEL = { pending: '待发送', sent: '已发送', sandboxed: '沙箱已发送', failed: '失败' };
 const STATUS_CHIP = { sent: 'is-ok', sandboxed: 'is-accent', failed: 'is-danger', pending: 'is-warn' };
+
+// 单封预览弹窗：previewData 里 rid 只在本地记，用于拼 .eml 下载地址，服务端不返回
+const previewDlg = ref(false);
+const previewData = reactive({ rid: '', to: '', name: '', subject: '', status: '', html: '', sandbox_file: null });
 
 // 解析与去重都在服务端，这里只是格式示例（每行 邮箱,姓名，姓名可省）。
 const RECIPIENT_PLACEHOLDER = '每行一位收件人，格式：邮箱,姓名\nzhangsan@corp.example,张三';
@@ -609,11 +639,15 @@ let confirmTimer = null;
 
 const CONFIRM_WAIT_SECONDS = 5;
 
-/** 本次真发的人数：单人补发固定 1 位；整队列只算待投与失败，服务端 runner 跳过的这里也不许算进来。 */
+/**
+ * 本次真发的人数：单人补发固定 1 位；整队列算待投、失败，外加沙箱轮剩下的那批。
+ * 沙箱发送把收件人标成 sandboxed 却没真投出去，转正式发送时它们必须重新入队，
+ * 口径要与服务端 campaignRunner.pendingRecipients 第三参（dryRun=false）一致。
+ */
 const confirmCount = computed(() =>
   confirmResendTo.value
     ? 1
-    : confirmRoster.value.filter((r) => r.status === 'pending' || r.status === 'failed').length,
+    : confirmRoster.value.filter((r) => r.status === 'pending' || r.status === 'failed' || r.status === 'sandboxed').length,
 );
 const confirmTotal = computed(() => confirmRoster.value.length);
 const confirmCountText = computed(() => `${confirmCount.value} 位`);
@@ -677,8 +711,8 @@ function stopConfirmCountdown() {
 async function openRealSendConfirm(taskId, resendRow = null) {
   const detail = await http.get(`/mail-tasks/${taskId}`);
   if (detail.task.dry_run) return ElMessage.info('该任务处于沙箱模式，无需真实发送确认');
-  if (!resendRow && !detail.recipients.some((r) => r.status === 'pending' || r.status === 'failed'))
-    return ElMessage.warning('名册里没有待投或失败的收件人，本次没有可投递的对象');
+  if (!resendRow && !detail.recipients.some((r) => r.status === 'pending' || r.status === 'failed' || r.status === 'sandboxed'))
+    return ElMessage.warning('名册里没有待投的收件人：这一轮的收件人都已经真发过了');
   confirmTask.value = detail.task;
   confirmRoster.value = detail.recipients;
   confirmResendTo.value = resendRow;
@@ -830,6 +864,31 @@ async function dropDetailAttachment() {
 }
 
 /**
+ * 单封预览：只读，不改任何状态。正文由服务端 renderMailBody 现渲染，
+ * 沙箱轮还会带上 sandbox_file（.eml 是否已落盘），据此决定「下载 .eml」按钮亮不亮。
+ */
+async function openPreview(r) {
+  try {
+    const data = await http.get(`/mail-tasks/${detailTask.value.id}/recipients/${r.id}/preview`);
+    Object.assign(previewData, data, { rid: r.id });
+    previewDlg.value = true;
+  } catch (e) {
+    ElMessage.error(e.message);
+  }
+}
+
+/** 下载沙箱产物：走 client 的原生 fetch 下载口（绕开 axios 拦截器才拿得到 blob），文件名带上收件人便于归档。 */
+async function downloadEml() {
+  if (!previewData.rid) return;
+  try {
+    const name = `${detailTask.value.title || 'mail'}-${previewData.to}.eml`;
+    await download(`/mail-tasks/${detailTask.value.id}/recipients/${previewData.rid}/eml`, name);
+  } catch (e) {
+    ElMessage.error(e.message);
+  }
+}
+
+/**
  * 单人补发：只把这一位拨回 pending 单独投递，不重过整张队列。
  * 服务端按 id AND task_id 一起查，别家的 rid 冒不了本任务的名；这条路由没有 assertDeployment，
  * 前端仍先卡 props.gate，补发同样算投放动作——任务在真发档时，一位也要过确认弹窗。
@@ -878,4 +937,6 @@ onMounted(() => {
 .site-chips { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }
 /* 附件与收件人两处都用它排按钮和上传控件，靠 gap 而不是 margin 撑开。 */
 .ops-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* 预览正文按邮件本身的窄版式渲染，白底黑字，别继承管理面的深色主题 */
+.mail-preview { width: 100%; height: 420px; border: 1px solid var(--lab-line-2); border-radius: 6px; background: #fff; }
 </style>

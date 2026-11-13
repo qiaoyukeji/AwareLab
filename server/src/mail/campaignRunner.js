@@ -18,15 +18,25 @@ function loadTask(taskId) {
   return task;
 }
 
-/** 本轮待投集合，按 created_at 升序：整任务只捞 pending/failed（已成功的不再重投），点名重发分支不过滤状态。 */
-function pendingRecipients(taskId, recipientIds) {
+/**
+ * 本轮待投集合，按 created_at 升序。
+ * 整任务口径随投递模式变：沙箱轮只捞 pending/failed；一旦关掉沙箱真发，
+ * 上一轮 sandboxed 的那些也要重新进队——它们只落了 .eml，从没进过收件箱，
+ * 不把 sandboxed 算进来就会出现"名册里没有待投或失败的收件人"，沙箱转正式永远发不出去。
+ * 点名重发分支不过滤状态。
+ */
+function pendingRecipients(taskId, recipientIds, dryRun) {
   if (recipientIds?.length) {
     return all(
       `SELECT * FROM mail_recipients WHERE task_id=? AND id IN (${recipientIds.map(() => '?').join(',')}) ORDER BY created_at`,
       [taskId, ...recipientIds]
     );
   }
-  return all("SELECT * FROM mail_recipients WHERE task_id=? AND status IN ('pending','failed') ORDER BY created_at", [taskId]);
+  const statuses = dryRun ? ['pending', 'failed'] : ['pending', 'failed', 'sandboxed'];
+  return all(
+    `SELECT * FROM mail_recipients WHERE task_id=? AND status IN (${statuses.map(() => '?').join(',')}) ORDER BY created_at`,
+    [taskId, ...statuses]
+  );
 }
 
 /** 单收件人投递：渲染先于沙箱/真发分流，两条分支共用同一份 message，失败原样上抛由上层记账。 */
@@ -46,18 +56,19 @@ async function deliverOne(task, recipient, { base, profile, dryRun }) {
 /** 整任务投递：前置失败（任务/授权/发信配置缺失）直接抛给 api 层；循环内单收件人失败只计数并写该行 error，不影响后续收件人；名册全投过时按现有终态原样返回，不改判失败。 */
 export async function deliverCampaign(taskId, { base, recipientIds = null } = {}) {
   const task = loadTask(taskId);
-  const recipients = pendingRecipients(taskId, recipientIds);
-  const profile = task.smtp_profile_id ? get('SELECT * FROM smtp_profiles WHERE id=?', [task.smtp_profile_id]) : null;
   // dry_run 在库里是 0/1 整数，显式转布尔再回传，避免前端拿到数字
   const dryRun = Boolean(task.dry_run);
+  const recipients = pendingRecipients(taskId, recipientIds, dryRun);
+  const profile = task.smtp_profile_id ? get('SELECT * FROM smtp_profiles WHERE id=?', [task.smtp_profile_id]) : null;
   // 关了沙箱却没有可用发信配置时直接拒绝，不静默空发再标已发送
   if (!dryRun && !profile) throw new Error('未配置发信邮箱，无法真实发信。');
 
-  // 整任务只捞 pending/failed，名册全都投过时的第二次点击会空转落到这条分支。
+  // 整任务没捞到人时的第二次点击会空转落到这条分支。
   // 空转不能按「0 封成功」判成全部失败，否则点两下发送就把投成功的任务标红，台账与交付报告一起失真。
+  // 判「全投过」的口径也跟着模式走：沙箱轮可以拿 sandboxed 抵数，真发轮只有 sent 才算真投过。
   if (!recipients.length) {
     const roster = all('SELECT status FROM mail_recipients WHERE task_id=?', [taskId]);
-    const delivered = roster.filter((r) => r.status === 'sent' || r.status === 'sandboxed').length;
+    const delivered = roster.filter((r) => r.status === 'sent' || (dryRun && r.status === 'sandboxed')).length;
     const status = roster.length && delivered === roster.length ? 'sent' : task.status;
     if (status !== task.status) run('UPDATE mail_tasks SET status=?, updated_at=? WHERE id=?', [status, nowIso(), taskId]);
     return { total: 0, sent: 0, failed: 0, skipped: roster.length, dry_run: dryRun, status };

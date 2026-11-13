@@ -10,7 +10,7 @@ import { ok, badRequest, notFound, paginate } from '../platform/net/envelope.js'
 import { assertDeployment, findActive } from '../security/mandate.js';
 import { writeAudit } from '../security/audit.js';
 import { ownerClause, ownsRow } from '../security/scope.js';
-import { mailBase, needsSite, taskSiteOrigin } from '../mail/composer.js';
+import { mailBase, needsSite, renderMailBody, renderVars, taskSiteOrigin } from '../mail/composer.js';
 import { deliverCampaign, resendRecipient } from '../mail/campaignRunner.js';
 
 export const campaignApi = express.Router();
@@ -264,6 +264,47 @@ campaignApi.post('/mail-tasks/:id/recipients/:rid/resend', async (req, res) => {
 
 // DELETE /mail-tasks/:id — 删任务与其收件人名册，不设门禁。mail_recipients 无外键级联，须先按 task_id 显式删子表，否则孤儿收件人咬住看板与重发。
 // 磁盘附件、events、capture_tokens 与已采记录都留着：任务没了证据还在；审计记下删掉的收件人数。
+// GET /mail-tasks/:id/recipients/:rid/preview —— 沙箱正文预览：按任务当前配置把这一封重新渲染一遍，
+// 界面用它在弹窗里看「收件人实际会收到什么」，不必去 data/outbox 里翻文件。
+// 渲染口径与 runner 完全一致（renderMailBody + renderVars），改一处要一起改。
+campaignApi.get('/mail-tasks/:id/recipients/:rid/preview', (req, res) => {
+  const task = loadOwnedTask(req, res);
+  if (!task) return;
+  const recipient = get('SELECT * FROM mail_recipients WHERE id=? AND task_id=?', [req.params.rid, task.id]);
+  if (!recipient) return notFound(res, '收件人不存在');
+  ok(res, {
+    subject: renderVars(task.subject, recipient),
+    to: recipient.email,
+    name: recipient.name || '',
+    status: recipient.status,
+    html: renderMailBody(task, recipient, { base: mailBase(task, req) }),
+    sandbox_file: fs.existsSync(emlPath(task, recipient)) ? path.basename(emlPath(task, recipient)) : null,
+  });
+});
+
+// GET /mail-tasks/:id/recipients/:rid/eml —— 下载沙箱产物（真文件，不是重渲染）。
+// 文件名规则与 transport.writeSandboxMail 一致：任务 id 前 8 位 + 邮箱，改一处要一起改。
+campaignApi.get('/mail-tasks/:id/recipients/:rid/eml', (req, res) => {
+  const task = loadOwnedTask(req, res);
+  if (!task) return;
+  const recipient = get('SELECT * FROM mail_recipients WHERE id=? AND task_id=?', [req.params.rid, task.id]);
+  if (!recipient) return notFound(res, '收件人不存在');
+  const file = emlPath(task, recipient);
+  if (!fs.existsSync(file)) {
+    return notFound(res, '这一封还没有沙箱产物，先点一次「沙箱发送」生成 .eml');
+  }
+  const name = `${task.title || 'mail'}-${recipient.email}.eml`.replace(/[\\/:*?"<>|]/g, '_');
+  res.setHeader('Content-Type', 'message/rfc822');
+  res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(name)}`);
+  fs.createReadStream(file).pipe(res);
+});
+
+// 沙箱 .eml 落盘路径：任务 id 前 8 位 + 邮箱，与 transport.writeSandboxMail 的命名保持一致
+function emlPath(task, recipient) {
+  const safe = String(recipient.email).replace(/[^\w.@-]/g, '_');
+  return path.join(config.paths.outbox, `${String(task.id).slice(0, 8)}-${safe}.eml`);
+}
+
 campaignApi.delete('/mail-tasks/:id', (req, res) => {
   if (!loadOwnedTask(req, res)) return;
   // 删之前先数收件人：审计里这个数是"删了多少人名册"的唯一凭证，删完再数永远是 0
