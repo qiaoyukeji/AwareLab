@@ -299,6 +299,113 @@ campaignApi.get('/mail-tasks/:id/recipients/:rid/eml', (req, res) => {
   fs.createReadStream(file).pipe(res);
 });
 
+// GET /mail-tasks/:id/recipients/:rid/linkcheck —— 真发前的链接自检。
+// 把这一封渲染出来，挑出正文里的 href/src，逐个在本机走一遍跳转（都带 probe=1，不计命中），
+// 回每一跳的状态码与落点：操作员在界面上先看见"点下去会去哪"，确认正常再放行真实发送。
+campaignApi.get('/mail-tasks/:id/recipients/:rid/linkcheck', async (req, res) => {
+  const task = loadOwnedTask(req, res);
+  if (!task) return;
+  const recipient = get('SELECT * FROM mail_recipients WHERE id=? AND task_id=?', [req.params.rid, task.id]);
+  if (!recipient) return notFound(res, '收件人不存在');
+  const html = renderMailBody(task, recipient, { base: mailBase(task, req) });
+  // 演练站常挂在只有内网 DNS 才认的域名上，服务器自己解析不了 www 那一跳；
+  // 带上站点信息，公网地址摸不通时退回"本机端口 + Host 头"验一次，至少能证明链路拼对了。
+  const site = task.site_id ? get('SELECT * FROM web_sites WHERE id=?', [task.site_id]) : null;
+  ok(res, { links: await probeLinks(extractLinks(html), site) });
+});
+
+// 正文里的链接：href 与 img 的 src 都要，像素也是"链接通不通"的一部分
+function extractLinks(html) {
+  const found = [];
+  const re = /(?:href|src)\s*=\s*"([^"]+)"/gi;
+  let m;
+  while ((m = re.exec(String(html ?? ''))) !== null) {
+    const url = m[1].trim();
+    if (!/^https?:\/\//i.test(url) || found.includes(url)) continue;
+    found.push(url);
+  }
+  return found;
+}
+
+// 自检最多等 6 秒一跳：演练站与应用都跑在本机，超时基本等于端口没起
+const PROBE_TIMEOUT_MS = 6000;
+
+/** 给平台自己的信标路由追加 probe=1，别让自检把 hit 记录写脏；外部地址原样走。 */
+function withProbe(raw) {
+  try {
+    const u = new URL(raw);
+    if (u.pathname.startsWith('/alab/v2/')) u.searchParams.set('probe', '1');
+    return u.toString();
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * 公网地址摸不通时，改用站点自己的监听口再试一次：路径与查询串原样保留，
+ * Host 头换成对外域名（访客门禁是按 Host 比对授权名单的，不换会吃 403）。
+ * 这一步只证明"链接拼对了、站是活的"，所以结果里标 via:'local'，界面要如实说明。
+ */
+async function probeLocal(raw, site) {
+  if (!site?.listen_port) return null;
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    return null;
+  }
+  const host = site.domain || u.host;
+  const local = `http://127.0.0.1:${site.listen_port}${u.pathname}${u.search}`;
+  try {
+    const res = await fetch(local, {
+      redirect: 'manual',
+      headers: { host },
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    return { status: res.status, location: res.headers.get('location'), via: 'local', host };
+  } catch (err) {
+    return { status: 0, location: null, via: 'local', host, error: err?.name === 'TimeoutError' ? '超时' : String(err?.message || err) };
+  }
+}
+
+/** 单条链接的两跳：先看信标路由本身（302 的话再跟一下落点），把状态码摊开给界面。 */
+async function probeOne(raw, site) {
+  const kind = /\/alab\/v2\/pixel/.test(raw) ? 'pixel' : /\/alab\/v2\/trace/.test(raw) ? 'trace' : 'other';
+  const item = { url: raw, kind, status: 0, location: null, target_status: null, ok: false };
+  try {
+    const res = await fetch(withProbe(raw), { redirect: 'manual', signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+    item.status = res.status;
+    item.location = res.headers.get('location');
+    // 302 的落点还要再摸一次：改写到 8080 却忘了开站，就是这一步报 502/超时
+    if (item.location) {
+      const target = await fetch(withProbe(item.location), { redirect: 'manual', signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
+      item.target_status = target.status;
+    }
+    item.ok = item.status >= 200 && item.status < 400 && (item.target_status === null || (item.target_status >= 200 && item.target_status < 400));
+  } catch (err) {
+    item.error = err?.name === 'TimeoutError' ? '超时' : String(err?.message || err);
+  }
+  // 公网域名解析不了（内网演练的常态）就退到监听口；已经是本机地址的不用再试
+  if (!item.ok) {
+    const fallback = await probeLocal(raw, site);
+    if (fallback) {
+      item.local = fallback;
+      const pass = fallback.status >= 200 && fallback.status < 400;
+      if (pass) {
+        item.ok = true;
+        item.note = `公网地址没通（${item.error || `HTTP ${item.status}`}），按本机 ${site.listen_port} 端口验证通过`;
+        delete item.error;
+      }
+    }
+  }
+  return item;
+}
+
+/** 并发摸完所有链接；顺序按正文出现顺序，界面照着渲染就行。 */
+async function probeLinks(urls, site = null) {
+  return Promise.all(urls.map((u) => probeOne(u, site)));
+}
+
 // 沙箱 .eml 落盘路径：任务 id 前 8 位 + 邮箱，与 transport.writeSandboxMail 的命名保持一致
 function emlPath(task, recipient) {
   const safe = String(recipient.email).replace(/[^\w.@-]/g, '_');

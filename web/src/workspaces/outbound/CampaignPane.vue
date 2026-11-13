@@ -344,6 +344,31 @@
         <span>授权有效期：<b>{{ confirmInfo.window }}</b></span>
       </div>
       <div class="lab-stack">
+        <div class="sec-title lab-strong">发送前自检</div>
+        <div class="lab-hint">
+          先把这一封摊开看：下面列出正文里的链接，点「打开」会在新标签页真的走一遍跳转——这次访问带 probe 标记，不计入命中记录。
+          链接都通了，「开始真实发送」才会放开。
+        </div>
+        <div class="ops-row">
+          <el-button :loading="selfCheck.running" @click="runSelfCheck">自检链接</el-button>
+          <span v-if="selfCheck.ready" class="lab-chip" :class="selfCheck.ok ? 'is-ok' : 'is-danger'">
+            {{ selfCheck.ok ? '链接都通' : '有链接不通' }}
+          </span>
+          <span v-else class="lab-chip is-warn">未自检</span>
+        </div>
+        <div v-if="selfCheck.rows.length" class="link-list">
+          <div v-for="(l, i) in selfCheck.rows" :key="i" class="link-row">
+            <span class="link-kind">{{ l.label }}</span>
+            <a :href="l.probe" target="_blank" rel="noopener" class="link-open">{{ l.short }}</a>
+            <span class="link-state" :class="l.ok ? 'is-ok' : 'is-bad'">{{ l.ok ? '✓' : '✕' }} {{ l.text }}</span>
+          </div>
+        </div>
+        <div v-if="selfCheck.ready && !selfCheck.ok" class="lab-hint" style="color: var(--lab-danger)">
+          有链接没通过：多半是绑定网站没开、采集端口不对，或反代回源端口写错。改完再点一次「自检链接」。
+        </div>
+      </div>
+
+      <div class="lab-stack">
         <div class="sec-title lab-strong">手动输入人数以确认</div>
         <div class="lab-hint">
           请在下面输入本次要投递的收件人数量（阿拉伯数字）。输入与接口返回的实际待投人数不一致时，
@@ -356,6 +381,9 @@
           服务端返回：{{ confirmServerError }}（点「刷新状态」重新拉授权与人数后才可能恢复可点）
         </div>
         <div v-if="confirmCountdown > 0" class="lab-hint">防手滑等待：还需 {{ confirmCountdown }} 秒。</div>
+        <div v-if="!selfCheck.ok" class="lab-hint" style="color: var(--lab-warn)">
+          还没通过链接自检：点上面的「自检链接」，全部通过后按钮才会放开。
+        </div>
       </div>
     </div>
     <template #footer>
@@ -393,6 +421,9 @@ const STATUS_CHIP = { sent: 'is-ok', sandboxed: 'is-accent', failed: 'is-danger'
 // 单封预览弹窗：previewData 里 rid 只在本地记，用于拼 .eml 下载地址，服务端不返回
 const previewDlg = ref(false);
 const previewData = reactive({ rid: '', to: '', name: '', subject: '', status: '', html: '', sandbox_file: null });
+
+// 真发前的链接自检：ok 一路做进 canRealSend，没点过自检就别想放行
+const selfCheck = reactive({ running: false, ready: false, ok: false, rows: [] });
 
 // 解析与去重都在服务端，这里只是格式示例（每行 邮箱,姓名，姓名可省）。
 const RECIPIENT_PLACEHOLDER = '每行一位收件人，格式：邮箱,姓名\nzhangsan@corp.example,张三';
@@ -675,7 +706,10 @@ const confirmMismatchHint = computed(() => {
   return String(confirmInput.value).trim() === String(confirmCount.value) ? '' : '与本次待投人数不一致，按钮不会放开。';
 });
 
-/** 四道都过才放行：有授权、有真发对象、人数输对、防手滑等待走完。服务端拒绝过还要显式刷新才重试。 */
+/**
+ * 四道都过才放行：有授权、有真发对象、人数输对、防手滑等待走完；外加第五道——链接自检通过。
+ * 服务端拒绝过还要显式刷新才重试。
+ */
 const canRealSend = computed(
   () =>
     !!props.gate &&
@@ -683,6 +717,7 @@ const canRealSend = computed(
     confirmCount.value > 0 &&
     !confirmServerError.value &&
     confirmCountdown.value === 0 &&
+    selfCheck.ok &&
     String(confirmInput.value).trim() === String(confirmCount.value),
 );
 
@@ -693,6 +728,71 @@ function startConfirmCountdown() {
     confirmCountdown.value -= 1;
     if (confirmCountdown.value <= 0) stopConfirmCountdown();
   }, 1000);
+}
+
+/** 自检挑哪一位：单人补发就查他，否则查本轮真正会投的那一位（先 pending/failed，再沙箱轮留下的）。 */
+function selfCheckRecipient() {
+  if (confirmResendTo.value) return confirmResendTo.value;
+  return (
+    confirmRoster.value.find((r) => r.status === 'pending') ||
+    confirmRoster.value.find((r) => r.status === 'failed') ||
+    confirmRoster.value.find((r) => r.status === 'sandboxed') ||
+    null
+  );
+}
+
+/** 只给平台自己的信标路由加 probe：自检点一下不该在命中记录里留痕。 */
+function withProbe(raw) {
+  try {
+    const u = new URL(raw);
+    if (u.pathname.startsWith('/alab/v2/')) u.searchParams.set('probe', '1');
+    return u.toString();
+  } catch {
+    return raw;
+  }
+}
+
+/** 链接在界面上压短一点：保留 host + 路径，查询串太长会把一行撑爆 */
+function shortUrl(raw) {
+  try {
+    const u = new URL(raw);
+    return `${u.host}${u.pathname}`;
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * 真发前自检：让服务端把这一封现渲染出来的链接逐条走一遍（带 probe，不计数），
+ * 界面上再把结果摊成一行一行——哪条通、跳到哪、返回多少，都由操作员自己看。
+ * 全部通过才把 canRealSend 那道闸放开。
+ */
+async function runSelfCheck() {
+  const target = selfCheckRecipient();
+  if (!target) return ElMessage.warning('名册里没有可自检的收件人');
+  if (!confirmTask.value) return;
+  selfCheck.running = true;
+  selfCheck.ready = false;
+  try {
+    const data = await http.get(`/mail-tasks/${confirmTask.value.id}/recipients/${target.id}/linkcheck`);
+    selfCheck.rows = (data.links || []).map((l) => ({
+      label: l.kind === 'pixel' ? '打开像素' : l.kind === 'trace' ? '正文链接' : '其他链接',
+      short: shortUrl(l.url),
+      probe: withProbe(l.url),
+      ok: Boolean(l.ok),
+      // 走本机端口兜底通过时把原因写清楚，别让人以为公网地址也通了
+      text: l.ok
+        ? l.note || `${l.status}${l.target_status ? ` → ${l.target_status}` : ''}`
+        : l.error || `HTTP ${l.status}`,
+    }));
+    selfCheck.ok = selfCheck.rows.length > 0 && selfCheck.rows.every((r) => r.ok);
+    selfCheck.ready = true;
+    if (!selfCheck.rows.length) ElMessage.warning('正文里没有可自检的链接');
+  } catch (e) {
+    ElMessage.error(e.message);
+  } finally {
+    selfCheck.running = false;
+  }
 }
 
 /** 关窗即清零：倒计时是这一轮确认的一部分，不能留着上一轮的进度。 */
@@ -713,6 +813,10 @@ async function openRealSendConfirm(taskId, resendRow = null) {
   if (detail.task.dry_run) return ElMessage.info('该任务处于沙箱模式，无需真实发送确认');
   if (!resendRow && !detail.recipients.some((r) => r.status === 'pending' || r.status === 'failed' || r.status === 'sandboxed'))
     return ElMessage.warning('名册里没有待投的收件人：这一轮的收件人都已经真发过了');
+  // 每次打开都从"未自检"起：上一轮的结果不能替这一轮背书
+  selfCheck.ready = false;
+  selfCheck.ok = false;
+  selfCheck.rows = [];
   confirmTask.value = detail.task;
   confirmRoster.value = detail.recipients;
   confirmResendTo.value = resendRow;
@@ -939,4 +1043,13 @@ onMounted(() => {
 .ops-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 /* 预览正文按邮件本身的窄版式渲染，白底黑字，别继承管理面的深色主题 */
 .mail-preview { width: 100%; height: 420px; border: 1px solid var(--lab-line-2); border-radius: 6px; background: #fff; }
+/* 自检结果：一行一条链接，kind 固定宽，链接可点，状态贴右 */
+.link-list { display: flex; flex-direction: column; gap: 4px; }
+.link-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.link-kind { flex: 0 0 76px; color: var(--lab-ink-3); }
+.link-open { flex: 1 1 auto; color: var(--lab-accent); word-break: break-all; }
+/* 状态不用 chip：本机兜底那句写得长，chip 会撑成两行药丸，纯文字更好读 */
+.link-state { flex: 0 0 auto; max-width: 46%; color: var(--lab-ink-3); }
+.link-state.is-ok { color: var(--lab-accent); }
+.link-state.is-bad { color: var(--lab-danger); }
 </style>

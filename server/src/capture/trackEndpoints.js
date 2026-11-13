@@ -45,7 +45,10 @@ function visitorOf(token) {
 export function servePixel(req, res, url) {
   const token = url.searchParams.get('tk');
   const ip = clientIp(req);
+  // probe=1 是管理端「真发前自检」走的：只验证这一条通不通，不写命中记录
+  const probe = url.searchParams.get('probe') === '1';
   if (
+    !probe &&
     token &&
     rateAllowed(`p:i:${ip}`, PIXEL_PER_IP_MINUTE) &&
     rateAllowed(`p:t:${token}`, PIXEL_PER_TOKEN_MINUTE)
@@ -74,8 +77,10 @@ export function serveTrace(req, res, url) {
   const target = url.searchParams.get('url');
   const ip = clientIp(req);
   const userAgent = req.headers['user-agent'] || '';
+  // 同上：自检点击只验证跳转通不通，不记打开也不记点击，免得演练数据被自己人污染
+  const probe = url.searchParams.get('probe') === '1';
 
-  if (token && rateAllowed(`tr:i:${ip}`, TRACE_PER_IP_MINUTE) && rateAllowed(`tr:t:${token}`, TRACE_PER_TOKEN_MINUTE)) {
+  if (!probe && token && rateAllowed(`tr:i:${ip}`, TRACE_PER_IP_MINUTE) && rateAllowed(`tr:t:${token}`, TRACE_PER_TOKEN_MINUTE)) {
     const visitor = visitorOf(token);
     if (visitor) {
       recordMailOpen({ taskId: visitor.task_id ?? null, token, ip, userAgent });

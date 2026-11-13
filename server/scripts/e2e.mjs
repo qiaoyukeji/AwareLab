@@ -1631,6 +1631,48 @@ ok('超长令牌同样不落库', after === afterJumbo, `${after}→${afterJumbo
     `${realRound.status} ${JSON.stringify(realRound.json?.data)}`
   );
   ok('连接被拒后该收件人记为失败', (realRound.json?.data?.failed ?? 0) === 1, JSON.stringify(realRound.json?.data));
+
+  // 真发前的链接自检：起一个自己的站点、造一封带站点链接的邮件，走完沙箱轮再逐条摸。
+  // 用旧任务会踩雷——那一支在清理段里已经被软删，linkcheck 只会回 404。
+  const checkSite = await api(
+    '/web-sites',
+    { method: 'POST', body: JSON.stringify({ template_id: 'bt-page-mail-login', listen_ip: '127.0.0.1', listen_port: CAPTURE_PORT + 7 }) },
+    token
+  );
+  const checkSiteId = checkSite.json?.data?.id;
+  ok('自检用的站点能建出来', checkSite.status === 200 && !!checkSiteId, `${checkSite.status} ${checkSite.json?.message || ''}`);
+  const checkStart = await api(`/web-sites/${checkSiteId}/start`, { method: 'POST' }, token);
+  ok('自检用的站点能起监听', checkStart.status === 200, `${checkStart.status} ${checkStart.json?.message || ''}`);
+  const linkTask = await api(
+    '/mail-tasks',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        title: '链接自检回归',
+        subject: '请核验你的邮箱',
+        body_html: '<p>{{name}} 您好，请点 <a href="{{site_url}}/">立即核验</a>。</p>',
+        site_id: checkSiteId,
+        dry_run: true,
+        send_interval_ms: 0,
+      }),
+    },
+    token
+  );
+  const linkTaskId = linkTask.json?.data?.id;
+  await api(`/mail-tasks/${linkTaskId}/recipients`, { method: 'POST', body: JSON.stringify({ text: 'sunqi@corp.example,孙七' }) }, token);
+  await api(`/mail-tasks/${linkTaskId}/send`, { method: 'POST' }, token);
+  const linkDetail = await api(`/mail-tasks/${linkTaskId}`, {}, token);
+  const linkRid = linkDetail.json?.data?.recipients?.[0]?.id;
+
+  const hitBefore = (await api('/records?page=1&page_size=1', {}, token)).json?.data?.total;
+  const linkCheck = await api(`/mail-tasks/${linkTaskId}/recipients/${linkRid}/linkcheck`, {}, token);
+  const links = linkCheck.json?.data?.links || [];
+  ok('链接自检列出正文里的链接', links.length >= 1, `${linkCheck.status} ${JSON.stringify(links).slice(0, 140)}`);
+  ok('链接自检每条都通', links.length > 0 && links.every((l) => l.ok), JSON.stringify(links.map((l) => l.status)));
+  ok('链接自检带回跳转落点', links.some((l) => l.kind === 'trace' && l.location), JSON.stringify(links.map((l) => l.kind)));
+  const hitAfter = (await api('/records?page=1&page_size=1', {}, token)).json?.data?.total;
+  ok('带 probe 的自检不写命中记录', hitBefore === hitAfter, `${hitBefore}→${hitAfter}`);
+  await api(`/web-sites/${checkSiteId}/stop`, { method: 'POST' }, token);
 }
 
 console.log(lines.join('\n'));
