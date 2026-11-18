@@ -36,9 +36,13 @@ const SMS_MAX_ATTEMPTS = 5;
 const SMS_WINDOW_MS = 10 * 60 * 1000;
 const smsAttempts = new Map();
 
-/** 短信尝试的计数键：同一来源地址刷同一张票据才算一次连续尝试，换票据换地址就重新计。 */
-function smsAttemptKey(req, ticket) {
-  return `${normalizeIp(clientIp(req))}|${String(ticket || '').slice(-8)}`;
+/**
+ * 短信尝试的计数键：同一来源地址对同一个账号的连续失败算一组。
+ * 不能把票据拼进键里——票据每次重登都会换新的，等于给爆破者一个"换票即清零"的漏洞；
+ * 账号维度进键，是为了让同一出口 NAT 后面的不同用户互不牵连。
+ */
+function smsAttemptKey(req, userId) {
+  return `${normalizeIp(clientIp(req))}|${userId || 'anon'}`;
 }
 
 /** 这张票据在当前地址下是否已经试满；窗口过期顺手清掉，避免表随票据无限长大。 */
@@ -282,7 +286,9 @@ export async function verifySmsLogin(req, res) {
   const payload = readTicket(req.body?.ticket);
   if (!payload) return badRequest(res, '验证已过期，请重新登录');
   // 先看这张票据试满没有：满了直接拒，不再把验证码送去云端比对，省一次外呼也断掉爆破通道
-  const attemptKey = smsAttemptKey(req, req.body?.ticket);
+  // 计数键按「来源地址 + 用户」而不是带票据：票据是每次重登新签的，拿票据做键等于换个票据就清零，
+  // 知道口令的人可以无限次重登、每次白拿 5 次验证码尝试，六位码迟早被磨出来。
+  const attemptKey = smsAttemptKey(req, payload.u);
   if (smsBlocked(attemptKey)) return badRequest(res, '验证码错误次数过多，请重新获取验证码');
   const code = String(req.body?.code || '').replace(/\D/g, '');
   if (code.length < 4) return badRequest(res, '请输入短信验证码');

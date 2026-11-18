@@ -183,9 +183,16 @@ namespace AwareLab
         {
             AppDomain.CurrentDomain.AssemblyResolve += (sender, e) =>
             {
+                // 只认 WorkDir 里自己的 DLL：名字里带路径分隔符或 ".." 的一律不装，
+                // 否则一条构造出来的程序集名就能把加载目录挪到别处
                 var simple = new AssemblyName(e.Name).Name;
+                if (string.IsNullOrEmpty(simple) || simple.IndexOfAny(new[] { '\\', '/', ':' }) >= 0 || simple.Contains("..")) return null;
                 var candidate = Path.Combine(WorkDir, simple + ".dll");
-                return File.Exists(candidate) ? Assembly.LoadFrom(candidate) : null;
+                if (!File.Exists(candidate)) return null;
+                // 解析后确认仍在 WorkDir 内（符号链接/短名绕路）
+                var full = Path.GetFullPath(candidate);
+                if (!full.StartsWith(Path.GetFullPath(WorkDir) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) return null;
+                try { return Assembly.LoadFrom(full); } catch { return null; }
             };
         }
 
@@ -274,15 +281,20 @@ namespace AwareLab
             catch { return "（读不到日志）"; }
         }
 
+        /// <summary>
+        /// 停服务端：先给一次"正常关窗"的机会，等不到再强杀。
+        /// 服务端是以 CreateNoWindow 起的控制台进程，Windows 上收不到 Ctrl+C 这类控制台事件，
+        /// CloseMainWindow 多半返回 false——所以这里不强求优雅退出，但至少要等它把
+        /// 在途写库（WAL checkpoint）收完；实在不退，作业对象（JobObject）也会在主进程消失时带走它。
+        /// </summary>
         internal static void StopServer()
         {
             try
             {
-                if (Server != null && !Server.HasExited)
-                {
-                    Server.Kill();
-                    Server.WaitForExit(5000);
-                }
+                if (Server == null || Server.HasExited) return;
+                if (Server.CloseMainWindow()) Server.WaitForExit(3000);
+                if (!Server.HasExited) Server.Kill();
+                Server.WaitForExit(5000);
             }
             catch { }
         }
@@ -327,7 +339,9 @@ namespace AwareLab
                 text.AppendLine();
                 text.AppendLine("管理后台: " + url + "/");
                 text.AppendLine("账号: " + ReadPanelValue("username"));
-                text.AppendLine("密码: " + ReadPanelValue("password") + "   （登录后建议立即修改）");
+                // 口令不落第二份明文：它已经写在 config.yaml 里，这里再抄一份等于多一个泄露面
+                // （这个窗口会被截图、会被共享屏幕，配置目录至少还带文件权限）
+                text.AppendLine("密码: 见 " + Path.Combine(HomeDir, "config.yaml") + " 的 panel.password（首次登录会强制修改）");
                 text.AppendLine();
                 text.AppendLine("数据目录: " + HomeDir);
                 text.AppendLine("启动日志: " + LogFile);
@@ -358,12 +372,29 @@ namespace AwareLab
                 var inPanel = false;
                 foreach (var raw in lines)
                 {
-                    if (raw.TrimStart().StartsWith("panel:")) { inPanel = true; continue; }
+                    // panel: 只在顶格时算块首（缩进的 panel: 是别的块的子键）
+                    if (raw.Length > 0 && !char.IsWhiteSpace(raw[0]) && raw.TrimStart().StartsWith("panel:"))
+                    {
+                        inPanel = true;
+                        continue;
+                    }
                     if (!inPanel) continue;
                     if (raw.Length > 0 && !char.IsWhiteSpace(raw[0])) break;
                     var trimmed = raw.Trim();
-                    if (!trimmed.StartsWith(key + ":")) continue;
-                    var value = trimmed.Substring(key.Length + 1).Trim().Trim('"', '\'');
+                    if (trimmed.StartsWith("#") || !trimmed.StartsWith(key + ":")) continue;
+                    var value = trimmed.Substring(key.Length + 1).Trim();
+                    // 去掉行尾注释：未加引号的值里 " #" 之后是注释；带引号的值先取引号内原文
+                    if (value.StartsWith("\"") || value.StartsWith("'"))
+                    {
+                        var quote = value[0];
+                        var close = value.IndexOf(quote, 1);
+                        value = close > 0 ? value.Substring(1, close - 1) : value.Substring(1);
+                    }
+                    else
+                    {
+                        var comment = value.IndexOf(" #", StringComparison.Ordinal);
+                        if (comment >= 0) value = value.Substring(0, comment).TrimEnd();
+                    }
                     return string.IsNullOrEmpty(value) ? "（空）" : value;
                 }
             }

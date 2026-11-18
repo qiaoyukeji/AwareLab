@@ -8,17 +8,24 @@ import { ok, badRequest, notFound } from '../platform/net/envelope.js';
 import { writeAudit } from '../security/audit.js';
 import { testProfile } from '../mail/transport.js';
 import { requireAdmin } from '../security/session.js';
+import { isAdmin } from '../security/scope.js';
 
 export const senderApi = express.Router();
 
 // 所有出接口里 pass 列的统一替身：真口令永远不离开服务端
 const MASK = '******';
 
-/** 账号列表：按创建时间倒序，行内 pass 已换成 MASK。列表页与发信下拉只需要知道有这么个账号。 */
-senderApi.get('/smtp-profiles', (_req, res) => {
+/**
+ * 账号列表：按创建时间倒序，行内 pass 已换成 MASK。列表页与发信下拉只需要知道有这么个账号。
+ * 普通用户只拿到「能选」的最小集合（id/name/from_addr）：发信账号是平台级资产，
+ * host/user/端口这些拓扑信息只给管理员看，否则任何登录用户都能把内网 SMTP 拓扑摸一遍。
+ */
+senderApi.get('/smtp-profiles', (req, res) => {
   // 只回掩码：SMTP 口令不进前端状态，避免在浏览器内存与网络面板里二次泄露
   const rows = all('SELECT * FROM smtp_profiles ORDER BY created_at DESC').map((r) => ({ ...r, pass: MASK }));
-  ok(res, { rows, total: rows.length });
+  if (isAdmin(req)) return ok(res, { rows, total: rows.length });
+  const slim = rows.map((r) => ({ id: r.id, name: r.name, from_addr: r.from_addr }));
+  ok(res, { rows: slim, total: slim.length });
 });
 
 /**

@@ -75,3 +75,19 @@ export function countSecretFields(fields) {
   if (!fields || typeof fields !== 'object') return 0;
   return Object.keys(fields).filter((name) => isSecretField(name)).length;
 }
+
+/**
+ * 事件行里的 payload 也要过同一套掩码：form_fill 存的是 { fields }，attachment_run 存的是 { mail, fields }，
+ * 直接把 events 原样回给前端等于绕开 maskHistory 把明文口令泄出去。解析失败就原样返回，不因为脏数据抛错。
+ */
+export function maskEvent(event) {
+  if (!event || !event.payload) return event;
+  let data;
+  try {
+    data = JSON.parse(event.payload);
+  } catch {
+    return event;
+  }
+  if (!data || typeof data !== 'object' || !data.fields || typeof data.fields !== 'object') return event;
+  return { ...event, payload: JSON.stringify({ ...data, fields: maskFields(data.fields) }) };
+}

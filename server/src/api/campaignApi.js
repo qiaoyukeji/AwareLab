@@ -6,9 +6,10 @@ import path from 'node:path';
 import multer from 'multer';
 import { config } from '../platform/settings.js';
 import { all, get, insert, nowIso, pagedRows, run, update } from '../platform/storage/rows.js';
-import { ok, badRequest, notFound, paginate } from '../platform/net/envelope.js';
+import { ok, badRequest, conflict, forbidden, notFound, paginate } from '../platform/net/envelope.js';
 import { assertDeployment, findActive } from '../security/mandate.js';
 import { writeAudit } from '../security/audit.js';
+import { maskEvent } from '../security/secretMask.js';
 import { ownerClause, ownsRow } from '../security/scope.js';
 import { mailBase, needsSite, renderMailBody, renderVars, taskSiteOrigin } from '../mail/composer.js';
 import { deliverCampaign, resendRecipient } from '../mail/campaignRunner.js';
@@ -88,6 +89,7 @@ campaignApi.get('/mail-tasks', (req, res) => {
 
 // GET /mail-tasks/:id — 任务详情 {task, recipients, events}，id 不存在回 404。
 // events 并两条线：任务级按 ref_id，访客侧只带令牌、靠 token IN 本任务收件人令牌集认领。
+// 事件里的 form_fill 载着填表原文，出库前统一过 maskEvent，明文只在 reveal 那一处按需换回。
 campaignApi.get('/mail-tasks/:id', (req, res) => {
   const task = loadOwnedTask(req, res);
   if (!task) return;
@@ -97,7 +99,7 @@ campaignApi.get('/mail-tasks/:id', (req, res) => {
     events: all(
       'SELECT * FROM events WHERE ref_id=? OR token IN (SELECT token FROM mail_recipients WHERE task_id=?) ORDER BY created_at',
       [task.id, task.id]
-    ),
+    ).map(maskEvent),
   });
 });
 
@@ -110,6 +112,16 @@ campaignApi.post('/mail-tasks', (req, res) => {
   // undefined 才落配置默认；显式传 false/0 视为操作员要真发，必须配好 SMTP
   const dryRun = b.dry_run === undefined ? config.mail.default_dry_run : Boolean(b.dry_run);
   if (!dryRun && !b.smtp_profile_id) return badRequest(res, '关闭沙箱后必须选择发信邮箱配置');
+  // 发信配置与绑定站点都要真实存在：只信 id 不查库，错 id 会一直拖到真发那一刻才报错
+  if (b.smtp_profile_id && !get('SELECT 1 AS x FROM smtp_profiles WHERE id=?', [b.smtp_profile_id])) {
+    return badRequest(res, '发信邮箱配置不存在，请重新选择');
+  }
+  if (b.site_id && !get('SELECT 1 AS x FROM web_sites WHERE id=?', [b.site_id])) {
+    return badRequest(res, '绑定的钓鱼网站不存在，请重新选择');
+  }
+  // 关掉「必须有授权」时 findActive() 会给 null，而 mail_tasks.authorization_id 是 NOT NULL
+  const auth = findActive();
+  if (!auth) return forbidden(res, '尚未登记演练授权：请先在「演练授权」里登记，再回来建发送任务');
   const now = nowIso();
   const row = {
     id: crypto.randomUUID(),
@@ -127,7 +139,7 @@ campaignApi.post('/mail-tasks', (req, res) => {
     send_interval_ms: Number(b.send_interval_ms ?? config.mail.default_send_interval_ms),
     // 库里 0/1 落形（node:sqlite 不收布尔），出参由 taskView 翻回布尔
     dry_run: dryRun ? 1 : 0,
-    authorization_id: findActive().id,
+    authorization_id: auth.id,
     // 归属：普通用户只能看见、只能操作自己建的任务
     owner_id: req.user?.id || null,
     status: 'draft',
@@ -149,6 +161,14 @@ campaignApi.put('/mail-tasks/:id', (req, res) => {
   // 只收白名单这几列：授权绑定、状态这类字段不接受从这里改，防止绕过创建路径换授权
   for (const key of ['title', 'subject', 'body_html', 'mail_template_id', 'smtp_profile_id', 'sender', 'site_id']) {
     if (b[key] !== undefined) patch[key] = b[key] || null;
+  }
+  // 发信配置必须真实存在：以前换个不存在的 id 也能保存，真发时才在 runner 里报"未配置发信邮箱"
+  if (patch.smtp_profile_id && !get('SELECT 1 AS x FROM smtp_profiles WHERE id=?', [patch.smtp_profile_id])) {
+    return badRequest(res, '发信邮箱配置不存在，请到「钓鱼邮件 · 发信邮箱」重新选择');
+  }
+  // 绑定的网站同理：挂一个不存在的站点会让 {{site_url}} 退回管理端地址
+  if (patch.site_id && !get('SELECT 1 AS x FROM web_sites WHERE id=?', [patch.site_id])) {
+    return badRequest(res, '绑定的钓鱼网站不存在，请重新选择');
   }
   if (b.send_interval_ms !== undefined) patch.send_interval_ms = Number(b.send_interval_ms) || 0;
   if (b.dry_run !== undefined) patch.dry_run = b.dry_run ? 1 : 0;
@@ -234,6 +254,13 @@ campaignApi.post('/mail-tasks/:id/send', async (req, res) => {
     return badRequest(res, '正文使用了 {{site_url}}，请先给任务绑定一个开启中的钓鱼网站，或直接保存为草稿稍后再发');
   }
   try {
+    // 先落一条"开始投递"的审计再动手：真发要磨几分钟，中途进程被杀或断电时，
+    // 只写结束态的话这一轮投递在审计里根本不存在，事后无法证明谁在什么时候发过。
+    writeAudit(req, Number(task.dry_run) === 1 ? 'mail_task.sandbox_send_start' : 'mail_task.real_send_start', {
+      targetKind: 'mail_task',
+      targetId: task.id,
+      detail: { dry_run: Number(task.dry_run) === 1, pending: get('SELECT COUNT(*) AS n FROM mail_recipients WHERE task_id=? AND status IN (\'pending\',\'failed\')', [task.id]).n },
+    });
     const result = await deliverCampaign(task.id, { base: mailBase(task, req) });
     writeAudit(req, result.dry_run ? 'mail_task.sandbox_send' : 'mail_task.real_send', {
       targetKind: 'mail_task',
@@ -242,12 +269,14 @@ campaignApi.post('/mail-tasks/:id/send', async (req, res) => {
     });
     ok(res, result);
   } catch (err) {
+    // 认领失败是并发语义，回 409 让操作员看懂"正在发"；其余前置校验欠条件仍按 400
+    if (/正在发送中/.test(String(err.message))) return conflict(res, err.message);
     badRequest(res, err.message);
   }
 });
 
 // POST /mail-tasks/:id/recipients/:rid/resend — 只补发这一个收件人，不重过整张队列。收件人按 id AND task_id 查，别家 rid 冒不了本任务的名（错位会发错人）。
-// 不过授权门禁，真发判定由 runner 兜底；此路径不写审计，real_send 只在 /send 落。
+// 不过授权门禁，真发判定由 runner 兜底；投递结果写 mail_task.resend（沙箱轮写 sandbox_resend），与 /send 分开记，事后能看出是整单重投还是单独补发。
 campaignApi.post('/mail-tasks/:id/recipients/:rid/resend', async (req, res) => {
   if (!loadOwnedTask(req, res)) return;
   if (!get('SELECT 1 AS x FROM mail_recipients WHERE id=? AND task_id=?', [req.params.rid, req.params.id])) {
@@ -256,8 +285,16 @@ campaignApi.post('/mail-tasks/:id/recipients/:rid/resend', async (req, res) => {
   const task = loadOwnedTask(req, res);
   if (!task) return;
   try {
-    ok(res, await resendRecipient(req.params.id, req.params.rid, { base: mailBase(task, req) }));
+    const result = await resendRecipient(req.params.id, req.params.rid, { base: mailBase(task, req) });
+    // 补发也是一次真实投递，审计里必须留一行：只记在 /send 上会让"谁单独补发了某个人"查不到
+    writeAudit(req, result.dry_run ? 'mail_task.sandbox_resend' : 'mail_task.resend', {
+      targetKind: 'mail_recipient',
+      targetId: req.params.rid,
+      detail: { task_id: task.id, dry_run: Boolean(result.dry_run), sent: result.sent ?? null, failed: result.failed ?? null },
+    });
+    ok(res, result);
   } catch (err) {
+    if (/正在发送中/.test(String(err.message))) return conflict(res, err.message);
     badRequest(res, err.message);
   }
 });
@@ -368,10 +405,51 @@ async function probeLocal(raw, site) {
   }
 }
 
+/** 允许被自检探测的主机：本机回环 + 站点域名 + 当前授权名单（`*.x` 记后缀）。 */
+function probeAllowedHosts(site) {
+  const hosts = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+  if (site?.domain) hosts.add(String(site.domain).toLowerCase());
+  try {
+    const auth = findActive();
+    for (const raw of String(auth?.allowed_hosts || '').split(/[\s,;]+/)) {
+      const value = raw.trim().toLowerCase();
+      // #ip 是"允许 IP 直连"的占位，不是主机名
+      if (!value || value === '#ip') continue;
+      hosts.add(value.startsWith('*.') ? value.slice(2) : value);
+    }
+  } catch {
+    // 读授权失败就只按站点域名放行，不影响自检本身
+  }
+  return hosts;
+}
+
+/** 这条链接该不该由服务端去摸：不在白名单里的（外部跳转、别人家的地址）一律不探。 */
+function probeHostAllowed(raw, site) {
+  let parsed;
+  try {
+    parsed = new URL(String(raw));
+  } catch {
+    return false;
+  }
+  const host = parsed.hostname.toLowerCase();
+  const allowed = probeAllowedHosts(site);
+  if (allowed.has(host)) return true;
+  // 泛域名只按后缀比，且要在点边界上（evil-example.com 不算 example.com）
+  for (const entry of allowed) {
+    if (host.endsWith(`.${entry}`)) return true;
+  }
+  return false;
+}
+
 /** 单条链接的两跳：先看信标路由本身（302 的话再跟一下落点），把状态码摊开给界面。 */
 async function probeOne(raw, site) {
   const kind = /\/alab\/v2\/pixel/.test(raw) ? 'pixel' : /\/alab\/v2\/trace/.test(raw) ? 'trace' : 'other';
   const item = { url: raw, kind, status: 0, location: null, target_status: null, ok: false };
+  // 自检是服务端主动发起的请求，不能拿它当代理去摸任意地址（任务正文是操作员可编辑的）：
+  // 白名单外的链接直接跳过，界面上标"未探测"，既不做 SSRF 也不挡住这次发送。
+  if (!probeHostAllowed(raw, site)) {
+    return { ...item, ok: true, skipped: true, note: '外部地址未探测：不在本次授权域名和站点域名内' };
+  }
   try {
     const res = await fetch(withProbe(raw), { redirect: 'manual', signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) });
     item.status = res.status;

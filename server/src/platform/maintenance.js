@@ -25,6 +25,10 @@ const RETENTION_TARGETS = [
   { table: 'records', useAuditCutoff: false },
   { table: 'events', useAuditCutoff: false },
   { table: 'push_logs', useAuditCutoff: false },
+  // 这两张表以前只在"收尾清空"时清，日常按天淘汰漏掉了：
+  // 演练站点每开一次就印一批令牌、每导一次名册就写一批收件人，不按保留期回收会一直长。
+  { table: 'capture_tokens', useAuditCutoff: false },
+  { table: 'mail_recipients', useAuditCutoff: false },
   // 审计单独一档：保留期必须 >= 数据保留期
   { table: 'audit_logs', useAuditCutoff: true },
 ];
@@ -153,7 +157,10 @@ function removeFiles(entries) {
     if (!isInsideDir(baseDir, target)) continue;
     try {
       fs.rmSync(target, { force: true });
-      counts[path.basename(baseDir)] = (counts[path.basename(baseDir)] || 0) + 1;
+      // 按扫描时就带上的目录键归集：用 basename 反推时，自定义目录（uploads/、my-outbox/）
+      // 一个都对不上 FILE_DIR_KEYS，计数会永远显示 0，运维还以为没删掉
+      const bucket = FILE_DIR_KEYS.includes(entry.key) ? entry.key : null;
+      if (bucket) counts[bucket] += 1;
       bytes += entry.size;
     } catch {
       failed += 1;

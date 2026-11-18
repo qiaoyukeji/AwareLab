@@ -9,6 +9,7 @@ import { siteUrl } from '../capture/siteRegistry.js';
 import { writeAudit } from '../security/audit.js';
 import { requireAdmin } from '../security/session.js';
 import { ownerClause, recordScopeClause } from '../security/scope.js';
+import { maskEvent } from '../security/secretMask.js';
 import { authorizationSummary, buildReportCsv, buildReportHtml, educationCoverage } from '../insight/drillReport.js';
 
 export const insightApi = express.Router();
@@ -168,11 +169,18 @@ insightApi.get('/stats/home', (req, res) => {
 });
 
 // 大屏数据流：投屏轮询、给原始流水（与 /stats/home 的聚合分工不同）。sites 只挑 id/端口/域名/状态、不带 tls_key/tls_cert，records 不含 form_json。
+// events 必须跟着记录归属裁：普通用户看到全平台的 form_fill 事件等于绕过 /records 的隔离；payload 再过 maskEvent，凭据字段不落地到大屏。
 // token/target_email 仍明文，本端点只在操作员本机/受控内网看、绝不对外暴露；LIMIT 拼的是代码常量、非用户输入。
 insightApi.get('/stats/bigscreen', (req, res) => {
   const scope = recordScopeClause(req, 'records');
   ok(res, {
-    events: all('SELECT * FROM events ORDER BY created_at DESC LIMIT ' + BIGSCREEN_EVENT_LIMIT),
+    events: all(
+      'SELECT * FROM events WHERE token IN (SELECT token FROM records WHERE 1=1' +
+        scope.sql +
+        ') ORDER BY created_at DESC LIMIT ' +
+        BIGSCREEN_EVENT_LIMIT,
+      scope.params
+    ).map(maskEvent),
     sites: scopedSites(req, 'id, listen_port, domain, status'),
     records: all(
       'SELECT id, kind, token, target_email, first_seen_at, submitted_at, dwell_seconds FROM records WHERE 1=1' +

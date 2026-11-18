@@ -37,6 +37,26 @@ function isSqliteFile(file) {
 }
 
 /**
+ * 认前身库不能只看"是不是 SQLite 文件"：数据目录里可能躺着别的工具留下的 .db，
+ * 搬错了等于把无关库拷进来当主库。这里再核一次表结构——本产品的库一定有 users 与 records。
+ */
+function looksLikeOurDatabase(file) {
+  let db;
+  try {
+    db = new DatabaseSync(file, { readOnly: true });
+    const hit = db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('users','records')")
+      .all();
+    return hit.length === 2;
+  } catch {
+    // 打不开/结构读不出来都当"不是我们的库"，宁可不动
+    return false;
+  } finally {
+    try { db?.close(); } catch { /* 关不掉也不影响判断结果 */ }
+  }
+}
+
+/**
  * 库文件改名后自动接上历史部署的库，否则升级即数据消失。按目录里现存 SQLite 文件识别前身，不依赖命名。
  */
 // 可能新建 target（VACUUM INTO 副本）、把旧主文件与 -wal/-shm 改名 .bak、打日志，绝不删任何文件
@@ -50,8 +70,9 @@ function migratePredecessorDatabase(target, DatabaseSync) {
     .readdirSync(dir)
     .filter((f) => f.endsWith('.db'))
     .map((f) => path.join(dir, f))
-    // 排除目标自身，用文件头把空 .db / 不是 SQLite 的伪候选筛掉
-    .filter((f) => f !== target && isSqliteFile(f))
+    // 排除目标自身，用文件头把空 .db / 不是 SQLite 的伪候选筛掉，
+    // 再用表结构确认是本产品的库（数据目录里可能有别的软件的 .db）
+    .filter((f) => f !== target && isSqliteFile(f) && looksLikeOurDatabase(f))
     // 按修改时间从新到旧：留着好几个旧库时，最近写过的那个才是前身
     .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
   if (!candidates.length) return null;

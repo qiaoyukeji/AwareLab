@@ -4,7 +4,7 @@
 import express from 'express';
 import { all, get, insert, nowIso, parseJson, run, update } from '../platform/storage/rows.js';
 import { config } from '../platform/settings.js';
-import { ok, badRequest, conflict, notFound } from '../platform/net/envelope.js';
+import { ok, badRequest, conflict, forbidden, notFound } from '../platform/net/envelope.js';
 import { assertDeployment, findActive, isDomainCovered } from '../security/mandate.js';
 import { deploymentBlockReason } from '../platform/configCheck.js';
 import { writeAudit } from '../security/audit.js';
@@ -18,9 +18,11 @@ export const siteApi = express.Router();
 /**
  * 站点出参统一视图，列表/详情/建站/修改都走这份；url 由 siteUrl 派生，有域名用域名、0.0.0.0 展示成 127.0.0.1、80/443 默认端口不写进链接；
  * running 从 siteRegistry 实时读，库里 status 只是运维意图。
+ * tls_key 是私钥，只进库不进响应（schema 头注的同一条不变式）：出参里只留一个布尔，前端据此显示"已配置私钥"。
  */
 function withView(site) {
-  return { ...site, url: siteUrl(site), running: isRunning(site.id) };
+  const { tls_key: tlsKey, ...rest } = site;
+  return { ...rest, tls_key_set: Boolean(tlsKey), url: siteUrl(site), running: isRunning(site.id) };
 }
 
 /**
@@ -68,6 +70,9 @@ siteApi.post('/web-sites', (req, res) => {
   const template = get('SELECT * FROM web_templates WHERE id=?', [b.template_id]);
   if (!template) return badRequest(res, '模板不存在');
   const auth = findActive();
+  // 关掉「必须有授权」时 findActive() 会给 null；此时 station 行上的 authorization_id 是 NOT NULL，硬写就变成 500 带堆栈。
+  // 按业务口径回 403（和门禁同一句话），而不是崩给用户看。
+  if (!auth) return forbidden(res, '尚未登记演练授权：请先在「演练授权」里登记，再回来建站');
   const port = Number(b.listen_port);
   // 缺省监听地址跟 bind_host：收成 127.0.0.1 时别把仿冒页挂到所有网卡
   const listenIp = b.listen_ip || config.capture.bind_host || '0.0.0.0';

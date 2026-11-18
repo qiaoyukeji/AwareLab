@@ -13,6 +13,7 @@ import { renderCapturePage, renderLessonFallbackPage, renderNoticePage } from '.
 import { recordFormSubmit, recordPageOpen, resolveToken } from './evidenceStore.js';
 import { ENGAGE_BASE, ENGAGE_ENDPOINT, LESSON_ENDPOINT, bootAfter } from './engageScript.js';
 import { servePixel, serveTrace } from './trackEndpoints.js';
+import { rateAllowed } from './rateGate.js';
 
 // 采集面直接对演练对象开放，没这道闸一个请求就能把内存打满；超这个量必然是在灌数据或塞文件
 const MAX_BODY = 512 * 1024;
@@ -123,8 +124,11 @@ function visitorToken(req, res, siteId, fromQuery) {
 
   const token = fromQueryToken || cachedToken;
   if (!token) {
+    // 匿名终端也入表：records 需要一个能挂住的令牌主键。
+    // 但不设限就等于给了"无 Cookie 刷页面"一条无限插表的通道（每个请求一行 capture_tokens），
+    // 所以按来源地址每分钟最多铸 60 个，超了这次就不铸，页面照常回但记录不落库。
+    if (!rateAllowed(`mint:${clientIp(req)}`, 60)) return null;
     const anonymous = crypto.randomUUID();
-    // 匿名终端也入表：records 需要一个能挂住的令牌主键
     run(
       'INSERT INTO capture_tokens (token,site_id,task_id,target_email,target_name,created_at) VALUES (?,?,?,?,?,?)',
       [anonymous, siteId, null, null, null, nowIso()]
@@ -216,8 +220,9 @@ export function buildSiteHandler(siteId) {
       return send(res, 405, 'method not allowed');
     }
 
-    // 先定身份再把采集运行时注入模板；POST 上报不签身份也不发 Cookie
-    const token = visitorToken(req, res, siteId, url.searchParams.get('tk'));
+    // 先定身份再把采集运行时注入模板；POST 上报不签身份也不发 Cookie。
+    // 铸造被限速时拿到 null：页面照常给，但不挂令牌——这一次访问不进记录，避免整页 500 吓到访客。
+    const token = visitorToken(req, res, siteId, url.searchParams.get('tk')) || '';
     const html = renderCapturePage(template.html, {
       site: siteId,
       token,

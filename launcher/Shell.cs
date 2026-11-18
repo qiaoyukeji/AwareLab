@@ -26,7 +26,6 @@ namespace AwareLab
         public Shell(string panelUrl)
         {
             url = panelUrl;
-
             Text = "AwareLab 安全意识演练平台 " + BuildInfo.Version;
             StartPosition = FormStartPosition.CenterScreen;
             MinimumSize = new Size(1000, 680);
@@ -79,7 +78,16 @@ namespace AwareLab
                 view.CoreWebView2.NewWindowRequested += (sender, e) =>
                 {
                     e.Handled = true;
-                    view.CoreWebView2.Navigate(e.Uri);
+                    // 只在本机管理面内部换页；跳到外部站点（素材里的外链、误点）交给系统浏览器，
+                    // 避免演练平台的窗口被导航到别处后，用户以为自己还在后台
+                    if (IsPanelUri(e.Uri))
+                    {
+                        view.CoreWebView2.Navigate(e.Uri);
+                    }
+                    else
+                    {
+                        try { Process.Start(new ProcessStartInfo(e.Uri) { UseShellExecute = true }); } catch { }
+                    }
                 };
                 view.CoreWebView2.Navigate(url + "/");
 
@@ -94,6 +102,24 @@ namespace AwareLab
                     "AwareLab", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 try { Process.Start(url + "/"); } catch { }
                 Close();
+            }
+        }
+
+        /// <summary>目标地址是否仍在本机管理面下（协议 + 主机 + 端口一致）。</summary>
+        private bool IsPanelUri(string target)
+        {
+            try
+            {
+                var panel = new Uri(url.EndsWith("/") ? url : url + "/");
+                var next = new Uri(target);
+                return string.Equals(panel.Scheme, next.Scheme, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(panel.Host, next.Host, StringComparison.OrdinalIgnoreCase)
+                    && panel.Port == next.Port;
+            }
+            catch
+            {
+                // 解析不了就不跳，宁可什么都不做
+                return false;
             }
         }
 

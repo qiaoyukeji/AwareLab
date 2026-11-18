@@ -9,6 +9,8 @@ panel:
   password: change-me
   bind: 127.0.0.1          # 默认只听本机；需要远程管理时才显式改写
   trust_proxy: false       # 仅当管理面挂在 nginx 等反向代理后面才置 true，否则来源 IP 可被 X-Forwarded-For 伪造
+  allow_ips: []            # 管理面来源白名单，空数组表示不限制；填了就只认这些地址（支持单个 IP）
+  public_url: ''           # 管理面对外地址（反代后填 https://admin.example.com），留空按监听地址算
 
 capture:
   port_range: [8000, 9999]   # 采集面允许占用的端口区间

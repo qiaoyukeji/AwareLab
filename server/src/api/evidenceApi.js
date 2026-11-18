@@ -10,7 +10,7 @@ import { clientIp } from '../platform/net/clientIp.js';
 import { flattenHistory } from '../capture/evidenceStore.js';
 import { isRunning } from '../capture/siteRegistry.js';
 import { writeAudit } from '../security/audit.js';
-import { isSecretField, maskHistory } from '../security/secretMask.js';
+import { isSecretField, maskEvent, maskHistory } from '../security/secretMask.js';
 import { isAdmin, ownerClause, ownsRecord, viewerId } from '../security/scope.js';
 import { requireAdmin } from '../security/session.js';
 import { DISPOSITION_LABEL, dispositionOf, educationCoverage } from '../insight/drillReport.js';
@@ -338,7 +338,8 @@ evidenceApi.get('/records/:id', (req, res) => {
       token: row.token,
     },
     // 时间线按令牌而非记录 id 取、时间正序：一次上钩的打开、填写、附件运行要串成完整轨迹
-    events: all('SELECT * FROM events WHERE token=? ORDER BY created_at', [row.token]),
+    // 事件 payload 与列表走同一套掩码：form_fill 里存着访客提交的原值，原样透出等于绕过 reveal 审计
+    events: all('SELECT * FROM events WHERE token=? ORDER BY created_at', [row.token]).map(maskEvent),
     screenshot_url: row.screenshot_path ? `/api/records/${row.id}/screenshot` : null,
   });
 });
@@ -410,8 +411,11 @@ evidenceApi.post('/records/disposition', (req, res) => {
   // 去重：跨页全选时同一个 id 可能被塞两次，IN 里重复值不出错但审计条数会虚高
   const unique = [...new Set(ids.map((id) => String(id)))];
   const placeholders = unique.map(() => '?').join(',');
-  // 先查真实存在的行：既拿改前的状态分布，也能如实报告 updated < requested
-  const found = all(`SELECT id, disposition FROM records WHERE id IN (${placeholders})`, unique);
+  // 归属条件必须进这条 SELECT：否则批量标记能改到别人的记录，单条 PATCH 有 ownedRecord 挡着、批量没有就漏了
+  const scope = recordScope(req);
+  const scoped = scope.cond ? ` AND (${scope.cond})` : '';
+  // 先查真实存在的行：既拿改前的状态分布，也能如实报告 updated < requested；别人的 id 落不到 found 里
+  const found = all(`SELECT id, disposition FROM records WHERE id IN (${placeholders})${scoped}`, [...unique, ...scope.params]);
   if (!found.length) return notFound(res, '所选记录都不存在');
   run(`UPDATE records SET disposition=? WHERE id IN (${placeholders})`, [req.body.disposition, ...found.map((r) => r.id)]);
   const from = {};
@@ -422,9 +426,9 @@ evidenceApi.post('/records/disposition', (req, res) => {
   writeAudit(req, 'record.disposition_batch', {
     targetKind: 'record',
     targetId: req.body.disposition,
-    detail: { to: req.body.disposition, requested: unique.length, updated: found.length, from },
+    detail: { to: req.body.disposition, requested: unique.length, updated: found.length, skipped: unique.length - found.length, from },
   });
-  ok(res, { requested: unique.length, updated: found.length, disposition: req.body.disposition });
+  ok(res, { requested: unique.length, updated: found.length, skipped: unique.length - found.length, disposition: req.body.disposition });
 });
 
 /**

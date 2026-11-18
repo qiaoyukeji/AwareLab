@@ -173,7 +173,9 @@
           <el-form label-position="top">
             <el-form-item label="TLS 私钥">
               <el-input v-model="form.tls_key" type="textarea" :rows="3"
-                placeholder="-----BEGIN PRIVATE KEY----- 开头的 PEM 私钥，留空则走 HTTP" />
+                :placeholder="form.tls_key_set
+                  ? '已配置私钥（出于安全不回显）。留空表示沿用；要更换请粘贴完整 PEM'
+                  : '-----BEGIN PRIVATE KEY----- 开头的 PEM 私钥，留空则走 HTTP'" />
             </el-form-item>
             <el-form-item label="TLS 证书">
               <el-input v-model="form.tls_cert" type="textarea" :rows="3"
@@ -366,6 +368,8 @@ const BLANK = {
   domain: '',
   tls_key: '',
   tls_cert: '',
+  // 服务端不再回显私钥，只回「配没配」，编辑时留空表示沿用库里那份
+  tls_key_set: false,
 };
 
 // 邮件正文里的站点变量名，模板中用常量插值，避免和 Vue 的 {{ }} 语法打架
@@ -453,7 +457,7 @@ const draft = computed(() => {
   const { scheme, host, port } = splitHost(form.domain);
   const listenPort = String(Number(form.listen_port) || '');
   const listenIp = form.listen_ip || '127.0.0.1';
-  const tls = Boolean(form.tls_cert && form.tls_key);
+  const tls = Boolean(form.tls_key_set || (form.tls_cert && form.tls_key));
   // 直连：协议跟着证书走，没填域名时退回监听 IP
   const directScheme = tls ? 'https' : 'http';
   const directHost = host || (listenIp === '0.0.0.0' ? '127.0.0.1' : listenIp);
@@ -599,8 +603,10 @@ function openEdit(row) {
     access_mode: row.public_url ? 'proxy' : 'direct',
     public_scheme: String(row.public_url || '').startsWith('http://') ? 'http' : 'https',
     domain: pub?.host ? `${pub.host}${pub.port ? `:${pub.port}` : ''}` : row.domain || '',
-    tls_key: row.tls_key || '',
+    // 私钥不回显：留空 + tls_key_set 表示库里已有，保存时不再发这一项
+    tls_key: '',
     tls_cert: row.tls_cert || '',
+    tls_key_set: Boolean(row.tls_key_set),
     listen_ip: row.listen_ip,
     listen_port: row.listen_port,
     status: row.status,
@@ -624,9 +630,12 @@ async function save() {
     template_id: form.template_id,
     domain: host || null,
     public_url: proxyMode.value && host ? `${publicScheme}://${host}${port ? `:${port}` : ''}` : '',
-    tls_key: form.tls_key,
-    tls_cert: form.tls_cert,
   };
+  // 只在真的要换证书/私钥时才发这两项：编辑时留空代表沿用，发了空串会把已配的 HTTPS 清掉
+  if (!editing.value || form.tls_key) {
+    editable.tls_key = form.tls_key;
+    editable.tls_cert = form.tls_cert;
+  }
   saving.value = true;
   try {
     const data = editing.value

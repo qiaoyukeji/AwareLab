@@ -53,6 +53,21 @@ async function deliverOne(task, recipient, { base, profile, dryRun }) {
   run("UPDATE mail_recipients SET status='sent', sent_at=?, error=NULL WHERE id=?", [nowIso(), recipient.id]);
 }
 
+// 置 sending 必须是一条带条件的原子更新：两次点击各自算完名册再一起 UPDATE，会把同一批人各发一遍。
+// 卡住超过 10 分钟的 sending 视为上一轮已经死掉（进程被杀/异常退出），允许重新认领，否则任务永远发不出去。
+const CLAIM_STALE_MS = 10 * 60 * 1000;
+
+/** 认领这一单，返回 true 表示抢到了；false 说明另一次投递正在跑。 */
+function claimTask(taskId) {
+  const now = Date.now();
+  const staleBefore = new Date(now - CLAIM_STALE_MS).toISOString();
+  const result = run(
+    "UPDATE mail_tasks SET status='sending', updated_at=? WHERE id=? AND (status<>'sending' OR updated_at<?)",
+    [new Date(now).toISOString(), taskId, staleBefore]
+  );
+  return (result?.changes ?? 0) > 0;
+}
+
 /** 整任务投递：前置失败（任务/授权/发信配置缺失）直接抛给 api 层；循环内单收件人失败只计数并写该行 error，不影响后续收件人；名册全投过时按现有终态原样返回，不改判失败。 */
 export async function deliverCampaign(taskId, { base, recipientIds = null } = {}) {
   const task = loadTask(taskId);
@@ -74,8 +89,8 @@ export async function deliverCampaign(taskId, { base, recipientIds = null } = {}
     return { total: 0, sent: 0, failed: 0, skipped: roster.length, dry_run: dryRun, status };
   }
 
-  // 一批几十封要按间隔磨几分钟，先置 sending 让界面能看出这单正在跑
-  run("UPDATE mail_tasks SET status='sending', updated_at=? WHERE id=?", [nowIso(), taskId]);
+  // 一批几十封要按间隔磨几分钟，先置 sending 让界面能看出这单正在跑；认领不到说明另一轮已经在发
+  if (!claimTask(taskId)) throw new Error('这一单正在发送中，等这一轮结束再点；若确认已经卡死，十分钟后再试');
 
   let sent = 0;
   let failed = 0;

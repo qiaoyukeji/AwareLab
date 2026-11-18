@@ -2,6 +2,7 @@
 // 模型 Key 与机器人令牌只掩码不外泄，不进响应/审计/日志；出站除本机回环外只走 https。
 import express from 'express';
 import { randomUUID } from 'node:crypto';
+import dns from 'node:dns/promises';
 import { config } from '../platform/settings.js';
 import { getSetting, setSetting, pagedRows } from '../platform/storage/rows.js';
 import { driver } from '../platform/storage/connection.js';
@@ -120,11 +121,56 @@ function settingsAuditDetail(key, value) {
   return { value: String(JSON.stringify(value ?? null)).slice(0, 500) };
 }
 
-/** GET /settings 一屏数据源，只读、永远成功；ai/sms 掩码回传（仅管理员），端口区间/门禁/面板路径等 config.yaml 值启动读一次、前端只看不能改，panel_path 需会话。 */
+/**
+ * 机器人地址里的 access_token / key 是凭据：读接口一律回「协议//host/******」，
+ * 前端表格照常显示、抽屉里可改，保存时再按掩码把库里原串补回去。
+ */
+const URL_MASK = '******';
+
+function maskChannelUrl(raw) {
+  const text = String(raw || '');
+  if (!text) return '';
+  try {
+    const parsed = new URL(text);
+    return `${parsed.protocol}//${parsed.host}/${URL_MASK}`;
+  } catch {
+    return URL_MASK;
+  }
+}
+
+/** 推送配置出库前抹掉地址尾段（渠道名、事件订阅照旧给前端，表格才不用改）。 */
+function maskPushConfig(cfg) {
+  if (!cfg || typeof cfg !== 'object') return cfg;
+  const channels = Array.isArray(cfg.channels)
+    ? cfg.channels.map((c) => (c && typeof c === 'object' ? { ...c, url: maskChannelUrl(c.url) } : c))
+    : cfg.channels;
+  return { ...cfg, channels };
+}
+
+/**
+ * 保存时把没改动过的渠道地址换回库里原串。
+ * 判据是"地址里还带着掩码"，用户手输的新地址不带掩码，原样落库；
+ * 按数组下标对旧行，是因为这版表结构里渠道没有稳定 id。
+ */
+function restorePushUrls(next, prev) {
+  const prevList = Array.isArray(prev?.channels) ? prev.channels : [];
+  const channels = Array.isArray(next?.channels)
+    ? next.channels.map((c, index) => {
+      if (!c || typeof c !== 'object') return c;
+      const url = String(c.url || '');
+      if (!url.includes(URL_MASK)) return { ...c };
+      const stored = prevList[index]?.url;
+      return { ...c, url: stored || '' };
+    })
+    : next?.channels;
+  return { ...next, channels };
+}
+
+/** GET /settings 一屏数据源，只读、永远成功；ai/sms/push 掩码回传（仅管理员），端口区间/门禁/面板路径等 config.yaml 值启动读一次、前端只看不能改，panel_path 需会话。 */
 platformApi.get('/settings', requireAdmin, (_req, res) => {
   const sms = smsConfig();
   ok(res, {
-    push: getSetting('push', PUSH_DEFAULT),
+    push: maskPushConfig(getSetting('push', PUSH_DEFAULT)),
     ai: maskSecrets(getSetting('ai', AI_DEFAULT)),
     sms: maskedSmsConfig(),
     sms_ready: !smsReadyProblem(sms),
@@ -141,7 +187,7 @@ platformApi.get('/settings', requireAdmin, (_req, res) => {
 });
 
 /** PUT /settings/:key 写一个键（body 取 value，键名走 URL），无白名单但每次必写审计、detail 脱敏截断，缺 value 或校验不过 400；ai 先 keepStoredKeys 再逐厂商过 providerUrlProblem，push 走 pushConfigProblem 并与默认合并，其余键原样存（端口区间与门禁开关要改 config.yaml 重启）。 */
-platformApi.put('/settings/:key', requireAdmin, (req, res) => {
+platformApi.put('/settings/:key', requireAdmin, async (req, res) => {
   const incoming = req.body?.value;
   // 缺 value 会把键存成空配置，必须拒掉而不是静默清空
   if (incoming === undefined) return badRequest(res, '缺少要保存的配置值');
@@ -175,7 +221,7 @@ platformApi.put('/settings/:key', requireAdmin, (req, res) => {
     // 每个厂商 base_url 都过门禁：settings 里的 URL 是唯一出站目的地，漏一家就是后门
     for (const provider of merged.providers || []) {
       if (!provider?.base_url) continue;
-      const problem = providerUrlProblem(provider.base_url);
+      const problem = await providerUrlProblemResolved(provider.base_url);
       if (problem) return badRequest(res, problem);
     }
     setSetting('ai', merged);
@@ -183,17 +229,19 @@ platformApi.put('/settings/:key', requireAdmin, (req, res) => {
     return ok(res, maskSecrets(getSetting('ai', AI_DEFAULT)));
   }
   if (req.params.key === 'push') {
-    const problem = pushConfigProblem(incoming);
+    // 前端整包回传，未改动的渠道地址是掩码串，先按掩码把库里原串补回来再校验
+    const merged = { ...PUSH_DEFAULT, ...restorePushUrls(incoming, getSetting('push', PUSH_DEFAULT)) };
+    const problem = pushConfigProblem(merged);
     if (problem) return badRequest(res, problem);
     // 与默认形状合并落库：redact 缺省落在 true
-    setSetting('push', { ...PUSH_DEFAULT, ...incoming });
+    setSetting('push', merged);
     writeAudit(req, 'settings.update', {
       targetKind: 'setting',
       targetId: 'push',
       // 审计里的渠道地址已 maskUrl 换星，存库的却是原串
-      detail: settingsAuditDetail('push', { ...PUSH_DEFAULT, ...incoming }),
+      detail: settingsAuditDetail('push', merged),
     });
-    return ok(res, getSetting('push', PUSH_DEFAULT));
+    return ok(res, maskPushConfig(getSetting('push', PUSH_DEFAULT)));
   }
   // 通用键不设白名单，但运行参数变更仍过审计
   setSetting(req.params.key, incoming);
@@ -302,6 +350,32 @@ function providerUrlProblem(raw) {
   return `模型服务地址协议不支持：${parsed.protocol}`;
 }
 
+/**
+ * 直连地址之外还要解析一次域名：只判字面量时，`internal.evil.example` 解析到 169.254.169.254
+ * 就能把 API Key 送到云元数据服务（DNS rebinding 同理）。解析失败不拦——域名暂时不可解析时
+ * 保存设置不该失败，真正出站请求时还有一次失败兜底。
+ */
+async function providerUrlProblemResolved(raw) {
+  const literal = providerUrlProblem(raw);
+  if (literal) return literal;
+  let parsed;
+  try {
+    parsed = new URL(String(raw));
+  } catch {
+    return null;
+  }
+  try {
+    const records = await dns.lookup(parsed.hostname, { all: true });
+    const hit = records.find((item) => privateHost(item.address));
+    if (hit && !['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname)) {
+      return `模型服务地址 ${parsed.hostname} 解析到内网地址 ${hit.address}，平台不允许把 API Key 发往内网`;
+    }
+  } catch {
+    // 解析不了就先放行，等真正调用时由 fetch 报错
+  }
+  return null;
+}
+
 /** 一键仿站，不写库。门禁顺序 cloneScopeProblem（无授权 403、名单外主机或员工邮箱 400）→ 缺 api_key 400 → providerUrlProblem 400；上游非 2xx 转 502，异常/超时/回包非 JSON 回 500。 */
 platformApi.post('/ai/generate', requireAdmin, async (req, res) => {
   const siteName = req.body?.site_name || '登录页';
@@ -317,7 +391,7 @@ platformApi.post('/ai/generate', requireAdmin, async (req, res) => {
     return badRequest(res, '请先在「系统设置 - 模型服务」中配置厂商与 API Key');
   }
   // 出站前再过一次 URL 门禁：库里 base_url 可能是历史遗留的明文地址
-  const urlProblem = providerUrlProblem(provider.base_url);
+  const urlProblem = await providerUrlProblemResolved(provider.base_url);
   if (urlProblem) return badRequest(res, urlProblem);
   const url = `${provider.base_url.replace(/\/$/, '')}/chat/completions`;
   try {

@@ -368,9 +368,19 @@ function addOwnershipColumns(db) {
   db.exec('CREATE INDEX IF NOT EXISTS idx_mail_tasks_owner ON mail_tasks(owner_id)');
 }
 
+/**
+ * 补事件与令牌上的索引：信标面上报是按 token 回查的，证据页按 ref_id 串事件，
+ * 导出又按 token 捞记录——这三条以前都是全表扫，演练一上量就明显卡。
+ */
+function addLookupIndexes(db) {
+  db.exec('CREATE INDEX IF NOT EXISTS idx_events_token ON events(token, created_at)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_events_ref_id ON events(ref_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_records_token ON records(token)');
+}
+
 // 迁移清单：数组顺序即执行顺序，version 严格递增且永不改历史条目。up 是字符串就直接 exec，是函数就先查表结构（加列专用）。
 // 加迁移只在尾部 push version=上一项+1；改已发布条目的 SQL 会让老库错位。
-const MIGRATIONS = [
+export const MIGRATIONS = [
   // v1：一次 exec 建齐全部表；user_version=0 但表已在的历史库靠 IF NOT EXISTS 同样安全
   { version: 1, label: '基线表结构', up: BASELINE },
   // v2：给 web_templates 加诊断留痕列，走函数先探表结构
@@ -391,6 +401,7 @@ const MIGRATIONS = [
   { version: 9, label: '站点对外访问地址', up: addSitePublicUrl },
   // v10：站点与邮件任务补 owner_id，普通用户只看到自己建的；为空的老数据归管理员
   { version: 10, label: '演练数据归属', up: addOwnershipColumns },
+  { version: 11, label: '事件与令牌查询索引', up: addLookupIndexes },
 ];
 
 // 最新结构版本 = 迁移数组最后一项，启动横幅与自检比对的就是它；别手写成常量

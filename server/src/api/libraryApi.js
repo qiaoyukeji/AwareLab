@@ -12,7 +12,31 @@ import { ok, badRequest, notFound } from '../platform/net/envelope.js';
 import { inspectTemplate } from '../capture/diagnostics.js';
 import { PAGE_TEMPLATES, MAIL_TEMPLATES, LEARN_PAGES, PAGE_TYPES } from '../library/builtinTemplates.js';
 import { applyBranding, editablePoints, templateAccent } from '../library/branding.js';
+
+/**
+ * 内置模板的 HTML 在进程生命周期里不会变，accent / 可改点 / 诊断三件事都是纯函数，
+ * 每来一次 GET /library 就对 21 页重算一遍（inspectTemplate 还要跑正则扫全篇）没必要。
+ * 按 HTML 文本做键缓存：将来模板内容改了，键也跟着变，不会拿到旧结论。
+ */
+const TEMPLATE_CACHE = new Map();
+
+function inspectCached(html, kind) {
+  const key = `${kind}\u0000${html}`;
+  const hit = TEMPLATE_CACHE.get(key);
+  if (hit) return hit;
+  const value = {
+    accent: templateAccent(html),
+    customize: editablePoints(kind, html),
+    diagnose: inspectTemplate(html),
+  };
+  // 只留最近 64 条：模板总量是几十条，64 足够，也挡住"用户改了模板导致键爆炸"
+  if (TEMPLATE_CACHE.size > 64) TEMPLATE_CACHE.clear();
+  TEMPLATE_CACHE.set(key, value);
+  return value;
+}
+
 import { restoreBuiltin, seedBuiltins } from '../library/seed.js';
+import { requireAdmin } from '../security/session.js';
 
 export const libraryApi = express.Router();
 
@@ -54,12 +78,12 @@ libraryApi.get('/library', (_req, res) => {
       type: item.type,
       description: item.description,
       html: item.html,
-      accent: templateAccent(item.html),
-      customize: editablePoints('page', item.html),
+      accent: inspectCached(item.html, 'page').accent,
+      customize: inspectCached(item.html, 'page').customize,
       response_content: item.response_content,
       template_id: installedId('web_templates', item.key),
       clones: cloneCount('web_templates', item.name),
-      diagnose: inspectTemplate(item.html),
+      diagnose: inspectCached(item.html, 'page').diagnose,
     })),
     mails: MAIL_TEMPLATES.map((item) => ({
       key: item.key,
@@ -67,8 +91,8 @@ libraryApi.get('/library', (_req, res) => {
       subject: item.subject,
       description: item.description,
       body_html: item.body_html,
-      accent: templateAccent(item.body_html),
-      customize: editablePoints('mail', item.body_html),
+      accent: inspectCached(item.body_html, 'mail').accent,
+      customize: inspectCached(item.body_html, 'mail').customize,
       template_id: installedId('mail_templates', item.key),
       clones: cloneCount('mail_templates', item.name),
     })),
@@ -76,7 +100,7 @@ libraryApi.get('/library', (_req, res) => {
       key: item.key,
       name: item.name,
       html: item.html,
-      customize: editablePoints('lesson', item.html),
+      customize: inspectCached(item.html, 'lesson').customize,
       template_id: installedId('learn_pages', item.key),
       clones: cloneCount('learn_pages', item.name),
     })),
@@ -84,7 +108,7 @@ libraryApi.get('/library', (_req, res) => {
 });
 
 /** 手动补种：升级前就存在的老库、或操作员删掉内置条目之后，点一下就把缺的补回来（不覆盖已有） */
-libraryApi.post('/library/seed', (_req, res) => {
+libraryApi.post('/library/seed', requireAdmin, (_req, res) => {
   ok(res, seedBuiltins({ silent: true }));
 });
 
@@ -158,7 +182,7 @@ libraryApi.post('/library/use', (req, res) => {
 });
 
 /** 恢复出厂内容：操作员把内置条目改坏后的退路，按 builtin_key 精确定位，不动副本 */
-libraryApi.post('/library/restore', (req, res) => {
+libraryApi.post('/library/restore', requireAdmin, (req, res) => {
   const { kind, key } = req.body || {};
   if (!kind || !key) return badRequest(res, '缺少素材类型或标识');
   const id = restoreBuiltin(kind, key);

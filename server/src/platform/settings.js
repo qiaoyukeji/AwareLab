@@ -133,6 +133,17 @@ config.paths = {
  * 把某个二级块的一个键写回 config.yaml 并同步内存 config（改口令走这里）。失败直接抛由调用方回 500，静默失败会让操作员以为改好、重启又变回旧值。
  * 优先只替换那一行、保留缩进与操作员注释而非整体 dump 回去；先探测文件主流行尾（源码 CRLF、yaml.dump 是 LF）再拼回避免整个文件重排，值含 : # 交给 yaml.dump 加引号，内存 config 必须同步改否则本次进程仍拿旧口令比对。
  */
+/**
+ * 写配置文件一律走临时文件 + rename：直接覆写时进程若在写一半崩掉，
+ * 留下的半截 YAML 下次启动就解析不过，管理员会被挡在门外。
+ * rename 在同一分区上是原子的（Windows 上也走 MoveFileEx 的替换语义）。
+ */
+function writeConfigText(text) {
+  const tmp = `${CONFIG_FILE}.tmp-${process.pid}`;
+  fs.writeFileSync(tmp, text, 'utf8');
+  fs.renameSync(tmp, CONFIG_FILE);
+}
+
 function persistConfigValue(section, key, value) {
   const text = fs.readFileSync(CONFIG_FILE, 'utf8');
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
@@ -147,13 +158,15 @@ function persistConfigValue(section, key, value) {
     for (let i = sectionAt + 1; i < lines.length; i++) {
       if (lines[i].trim() && !/^[\s#]/.test(lines[i])) { end = i; break; }
     }
-    const keyRe = new RegExp(`^(\\s+)${key}:\\s.*$`);
+    // 值可能是空的（`key:` 后面什么都不写），所以冒号后那段要允许为空，否则空值行匹配不上、
+    // 会被当成"键不存在"再插一行，配置里就出现两个同名键
+    const keyRe = new RegExp(`^(\\s+)${key}:\\s*(.*)$`);
     for (let i = sectionAt + 1; i < end; i++) {
       const hit = lines[i].match(keyRe);
       if (hit) {
         // 保留原缩进；旧行尾注释丢弃，值都换了旧注释多半已失效
         lines[i] = `${hit[1]}${rendered}`;
-        fs.writeFileSync(CONFIG_FILE, lines.join(eol), 'utf8');
+        writeConfigText(lines.join(eol));
         config[section] = { ...config[section], [key]: value };
         return;
       }
@@ -161,7 +174,7 @@ function persistConfigValue(section, key, value) {
     // 块在但键不在（老配置文件）：插到块末尾，缩进跟块内第一行对齐
     const indent = (lines.slice(sectionAt + 1, end).find((l) => l.trim()) || '  x').match(/^\s*/)[0] || '  ';
     lines.splice(end, 0, `${indent}${rendered}`);
-    fs.writeFileSync(CONFIG_FILE, lines.join(eol), 'utf8');
+    writeConfigText(lines.join(eol));
     config[section] = { ...config[section], [key]: value };
     return;
   }
@@ -169,7 +182,7 @@ function persistConfigValue(section, key, value) {
   // 连块都没有：按文件现有内容合并后整体重写（这种文件本来就是机器生成的，没有注释可丢）
   const raw = yaml.load(text) || {};
   raw[section] = { ...(raw[section] || {}), [key]: value };
-  fs.writeFileSync(CONFIG_FILE, yaml.dump(raw), 'utf8');
+  writeConfigText(yaml.dump(raw));
   config[section] = { ...config[section], [key]: value };
 }
 

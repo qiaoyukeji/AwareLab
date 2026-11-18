@@ -115,6 +115,11 @@ pageApi.post('/web-templates', (req, res) => {
 pageApi.put('/web-templates/:id', (req, res) => {
   if (!get('SELECT 1 AS x FROM web_templates WHERE id=?', [req.params.id])) return notFound(res, '模板不存在');
   const b = req.body || {};
+  // 换模板类型会被在建站点用着：类型决定访客看到的是登录页还是通知页，改错等于把线上页面换了壳
+  if (b.type !== undefined && b.type !== get('SELECT type FROM web_templates WHERE id=?', [req.params.id]).type) {
+    const used = get('SELECT COUNT(*) AS n FROM web_sites WHERE template_id=?', [req.params.id]).n;
+    if (used) return badRequest(res, '该模板仍被演练站点引用，先下线站点再改类型');
+  }
   const patch = { updated_at: nowIso() };
   // 字段白名单：id、created_at 与三列体检结果不在名单里，请求体永远无法直接覆写它们
   for (const key of ['name', 'type', 'description', 'html', 'response_type', 'response_content', 'learn_page_id']) {

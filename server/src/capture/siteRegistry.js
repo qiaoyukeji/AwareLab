@@ -48,6 +48,10 @@ export function startSite(site) {
 
   // listen 失败是异步的，EADDRINUSE 不会 throw 给调用方，只能靠回调把实况写回库里
   server.on('error', (err) => {
+    // 监听失败必须把自己从注册表摘掉：留在 listeners 里 isRunning() 会一直回 true，
+    // 界面显示"监听中"、访客却连不上，操作员重启站点的按钮也会被当成"已经在听"而空转。
+    const current = listeners.get(key);
+    if (current && current.siteId === site.id) listeners.delete(key);
     run("UPDATE web_sites SET status='error', updated_at=? WHERE id=?", [nowIso(), site.id]);
     // 采集面端口区间是 8000–9999，很容易撞上机器上别的服务；只说「启动失败」操作员还得自己去查 netstat
     if (err.code === 'EADDRINUSE') {

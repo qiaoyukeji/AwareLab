@@ -48,6 +48,10 @@ export function readTicket(ticket) {
   } catch {
     return null;
   }
-  if (!payload?.u || !payload?.p || Number(payload.exp) < Date.now()) return null;
+  // exp 必须是能解析的数字：脏值（"abc" / null / 缺失）算出来是 NaN，
+  // 而 NaN 和任何数比较都是 false——原来那行会把坏票据判成"没过期"，等于永不过期
+  const expiresAt = Number(payload?.exp);
+  if (!payload?.u || !payload?.p) return null;
+  if (!Number.isFinite(expiresAt) || expiresAt < Date.now()) return null;
   return payload;
 }

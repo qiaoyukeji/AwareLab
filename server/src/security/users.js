@@ -158,6 +158,9 @@ export function resetPassword(id, password) {
   const problem = passwordProblem(password);
   if (problem) return { error: problem };
   run('UPDATE users SET password_hash=?, updated_at=? WHERE id=?', [hashPassword(password), nowIso(), id]);
+  // 重置口令等于"把旧凭据作废"：不清会话的话，改之前登录的终端还能继续用旧会话操作，
+  // userApi 的注释与使用手册都把"清掉全部会话"写成了行为，代码必须对得上。
+  run('DELETE FROM sessions WHERE user_id=?', [id]);
   return { user: findById(id) };
 }
 

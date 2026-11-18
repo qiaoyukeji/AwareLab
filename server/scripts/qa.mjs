@@ -9,6 +9,7 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import yaml from 'js-yaml';
+import { schemaVersionHead } from '../src/platform/storage/schema.js';
 
 const SERVER_ROOT = path.resolve(import.meta.dirname, '..');
 const QA_ROOT = path.join(SERVER_ROOT, '.qa');
@@ -573,11 +574,12 @@ tc('TC-S-09', '站点接口不回显 TLS 私钥明文', async () => {
   const row = (data(listed)?.rows ?? []).find((r) => r.id === site.id);
   const peek = await api(`/web-sites/${site.id}/links`);
   const body = `${JSON.stringify(row)}${peek.text}`;
-  expect(!body.includes(pemKey), '私钥明文出现在站点列表/回看响应里（进了浏览器与网络面板）');
-  expect(body.includes('PRIVATE KEY'), '站点响应连证书都没有，界面无从判断这张网是否已配 HTTPS');
-  return '私钥只留在本机库里，界面拿到的是证书与「已配置」标记';
+  // 私钥正文片段只要出现在响应里就算泄露；别拿带换行的整段 PEM 比，JSON 里换行是 \\n，永远比不中
+  expect(!body.includes('TqFB1wCZhbqaTESTKEYnOtReAlDATA'), '私钥明文出现在站点列表/回看响应里（进了浏览器与网络面板）');
+  expect(!body.includes('PRIVATE KEY'), '响应里出现了 PRIVATE KEY 字样，说明私钥字段还在往外发');
+  expect(body.includes('BEGIN CERTIFICATE') || body.includes('"tls_key_set":true'), '站点响应既没证书也没「已配置」标记，界面无从判断这条网是否开了 HTTPS');
+  return '私钥只留在本机库里，界面拿到的是证书与 tls_key_set 标记';
 });
-
 tc('TC-S-10', '使用承诺必须逐字：缺省、近似、篡改都被拒', async () => {
   const base = { scope: 'QA 承诺校验', start_at: new Date(Date.now() - 60_000).toISOString(), end_at: new Date(Date.now() + 3_600_000).toISOString(), allowed_hosts: HOSTS };
   const missing = await api('/authorizations', { method: 'POST', body: JSON.stringify(base) });
@@ -1500,12 +1502,13 @@ tc('TC-F-19', '配置体检一次说清当前档位：结论可读可展示，�
   return `${body.findings.length} 条结论 / ${body.summary.length} 行摘要 / 锁定 ${sec.max_fails} 次锁 ${sec.lock_window_minutes} 分钟，全程不回显凭据`;
 });
 
-tc('TC-F-20', '库结构版本：迁移到 v6、16 张表、新列只加不改且不回填历史', async () => {
+tc('TC-F-20', '库结构版本：迁移跑到最新一级、关键表齐全、新列只加不改且不回填历史', async () => {
+  // 基准取 schema.js 迁移数组的末项，别写死数字：每加一级迁移都要改测试，迟早会忘
   const version = count('PRAGMA user_version')[0]?.user_version;
-  expect(version === 6, `库版本不是 6（实际 ${version}），迁移没跑完或跑过了头`);
+  expect(version === schemaVersionHead, `库版本不是 ${schemaVersionHead}（实际 ${version}），迁移没跑完或跑过了头`);
   const tables = count("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").map((r) => r.name);
-  expect(tables.length === 16, `表数与 schema 不一致（实际 ${tables.length} 张）：${tables.sort().join(', ')}`);
-  for (const must of ['records', 'events', 'sessions', 'login_failures', 'audit_logs', 'push_logs', 'mail_recipients', 'settings']) {
+  expect(tables.length >= 18, `表数与 schema 不一致（实际 ${tables.length} 张）：${tables.sort().join(', ')}`);
+  for (const must of ['records', 'events', 'sessions', 'login_failures', 'audit_logs', 'push_logs', 'mail_recipients', 'settings', 'web_sites', 'web_templates', 'mail_tasks', 'authorizations', 'capture_tokens']) {
     expect(tables.includes(must), `缺表 ${must}，对应功能会直接 500`);
   }
   const sessionCols = count('PRAGMA table_info(sessions)').map((c) => c.name);
@@ -1517,7 +1520,7 @@ tc('TC-F-20', '库结构版本：迁移到 v6、16 张表、新列只加不改�
   // 不回填是刻意的：把老记录猜成 new 会在教育覆盖率里凭空造出分母
   const legacy = count('SELECT id FROM records WHERE disposition IS NULL');
   expect(legacy.every((r) => r.id), '读不到 NULL 处置状态的行，无法确认迁移没有偷偷回填');
-  return `user_version=6、${tables.length} 张表、v5/v6 新列可空且历史行保持 NULL`;
+  return `user_version=${version}、${tables.length} 张表、v5/v6 新列可空且历史行保持 NULL`;
 });
 const ENGAGE = '/alab/v2/engage';
 const LESSON = '/alab/v2/lesson';
