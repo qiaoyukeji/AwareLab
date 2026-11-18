@@ -4,13 +4,18 @@
   <img src="brand/awarelab-logo.svg" alt="AwareLab" width="320" />
   <br />
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License Apache-2.0" /></a>
+  <img src="https://img.shields.io/badge/version-v2.5.5-0f766e.svg" alt="version v2.5.5" />
   <img src="https://img.shields.io/badge/%E5%B9%B3%E5%8F%B0-Windows%2010%20%2F%2011%20x64-0078d4.svg" alt="Windows 10 / 11 x64" />
   <img src="https://img.shields.io/badge/%E5%BD%A2%E6%80%81-%E5%8D%95%E6%96%87%E4%BB%B6%E6%A1%8C%E9%9D%A2%E7%A8%8B%E5%BA%8F-0f766e.svg" alt="单文件桌面程序" />
 </div>
 
+> 当前版本 **v2.5.5**（2026-11-18）。版本号在源码里只有一个真相：`server/package.json` 与
+> `web/package.json`，构建时注入前端并写入 exe 属性；窗口标题、启动信息控制台、侧栏页脚、
+> 登录页与标签页标题显示的都是它。发版记录见 [CHANGELOG.md](CHANGELOG.md)。
+
 AwareLab 是一套装在自己电脑上、专门用来做**钓鱼邮件与钓鱼网站演练**的安全意识平台。拿到书面授权之后，安全团队用它做四件事：准备素材、挂起钓鱼网站、发出演练邮件、把"谁打开了、谁填了、填了什么"记录成可交付的上钩证据。
 
-它不是一个装在服务器上的 SaaS，而是一个**双击就打开的桌面程序**：界面在它自己的窗口里，不经过用户的浏览器。点开 `AwareLab-2.5.1.exe`（文件名带版本号，换版本时一眼能看出手里是哪个），任务栏出现 AwareLab 的图标；同时会弹一个小的启动信息控制台（地址、账号、口令、数据目录），**随手关掉它不影响程序运行**。
+它不是一个装在服务器上的 SaaS，而是一个**双击就打开的桌面程序**：界面在它自己的窗口里，不经过用户的浏览器。点开 `AwareLab-2.5.5.exe`（文件名带版本号，换版本时一眼能看出手里是哪个），任务栏出现 AwareLab 的图标；同时会弹一个小的启动信息控制台（地址、账号、口令、数据目录），**随手关掉它不影响程序运行**。
 
 点主窗口右上角的 **×** 不会直接退出，而是先问一句：**最小化到托盘**（窗口收起来，站点和监听继续对目标开放），还是**直接退出**（停掉所有监听、结束服务端进程）。数据留在 exe 旁边的 `AwareLab-data` 目录里，拷走整个文件夹就换了台机器继续。
 
@@ -128,7 +133,7 @@ AwareLab 是一套装在自己电脑上、专门用来做**钓鱼邮件与钓鱼
 ### 进程装配
 
 ```
-AwareLab-2.5.1.exe（桌面启动器，C# WinForms + WebView2）
+AwareLab-<版本>.exe（桌面启动器，C# WinForms + WebView2；当前 v2.5.5）
   ├─ 解包内嵌的 AwareLabServer.exe 与 WebView2 运行库到 %LOCALAPPDATA%\AwareLab\app\<版本>
   ├─ 无窗口拉起服务端，把 AWARELAB_HOME 指到 exe 同级的 AwareLab-data
   ├─ 解析服务端打印的「管理后台: http://127.0.0.1:端口/随机路径」
@@ -205,6 +210,18 @@ npm run build                # 产出 web/dist，由 server 直接托管
 
 端口约定：**7777 前端开发服务器**（只在开发态存在）、**7778 管理面与信标面**、钓鱼网站另占 **8000–9999**。
 
+### 部署到服务器：公网和内网是两套配法
+
+| | 公网服务器 | 内网服务器 |
+| --- | --- | --- |
+| 访客看到的地址 | `https://phish.example.com/`（不带端口） | `http://10.20.30.40:8080/`（带端口） |
+| 域名解析 | **必须**：域名 A 记录指向这台服务器 | 不需要，直接用 IP |
+| 反向代理 | **必须**：nginx 443/80 → `127.0.0.1:8080`，并透传 `Host` | 可选 |
+| 平台里「访问方式」 | 域名反代（nginx） | IP:端口直连 |
+| 防火墙要放行 | 80/443 + 实际用到的 8000–9999 | 7778（建议只对内网）+ 8000–9999 |
+
+公网部署少任何一条都会翻车：解析没生效访客打不开；反代没透传 `Host`，采集面门禁一律 403；平台里按直连填，邮件链接就变成 `http://公网IP:8080/…`。管理面（7778）**不要**直接对公网开放——随机路径不是鉴权。完整步骤、nginx 片段、firewalld/ufw/netsh 示例见 [部署与运维手册 · 部署形态](docs/部署与运维手册.md)。
+
 ## 六、打包成 exe（双击即用）
 
 ### 需要什么
@@ -222,9 +239,9 @@ npm run build                # 产出 web/dist，由 server 直接托管
 cd server
 npm run build:exe
 # 产物（文件名都带版本号，版本取自 server/package.json）：
-#   dist/AwareLab-2.5.1.exe                    约 103MB，双击即用
-#   dist/release/AwareLab-2.5.1-win-x64.zip    约 39MB，发给别人的那个包
-#   dist/release/SHA256SUMS-2.5.1.txt          exe 与 zip 的 sha256
+#   dist/AwareLab-2.5.5.exe                    约 103MB，双击即用
+#   dist/release/AwareLab-2.5.5-win-x64.zip    约 39MB，发给别人的那个包
+#   dist/release/SHA256SUMS-2.5.5.txt          exe 与 zip 的 sha256
 ```
 
 这条命令按顺序做七件事：
@@ -266,12 +283,16 @@ npm run build:exe
 | 文档 | 用途 |
 | --- | --- |
 | [docs/使用手册.md](docs/使用手册.md) | 界面字段、按钮原文、完整操作流程、排障速查 |
-| [docs/部署与运维手册.md](docs/部署与运维手册.md) | 装到本机或内网服务器、反代与 TLS、备份与保留期、故障速查 |
+| [docs/部署与运维手册.md](docs/部署与运维手册.md) | 公网 / 内网两种部署形态、端口与防火墙、反代与 TLS、备份与保留期、故障速查 |
 | [docs/演练值守与缺陷分级.md](docs/演练值守与缺陷分级.md) | 演练期间的值守动作、缺陷分级与处置时限 |
 | [docs/培训讲稿.md](docs/培训讲稿.md) | 演练后安全教育可以直接照着讲的讲稿 |
 | [docs/术语对照表.md](docs/术语对照表.md) | 界面用词、代码用词与文档用词的对照 |
 | [docs/templates/演练授权书.md](docs/templates/演练授权书.md) | 给授权方签字的文书模板，字段与「演练授权」表单逐一对应 |
+| [SECURITY.md](SECURITY.md) | 支持版本、漏洞上报口径、部署者要自己负责的事 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 提 PR 的规矩、**提交信息必须带版本号** |
 | [CHANGELOG.md](CHANGELOG.md) | 版本记录 |
+
+文档的「适用版本」都写在正文第一行，和 `server/package.json` 对齐；升级发版时一并改。
 
 ## 八、许可与使用边界
 

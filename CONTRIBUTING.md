@@ -1,5 +1,7 @@
 # 参与贡献
 
+> 适用版本：v2.5.5 · 最后更新：2026-11-18
+
 感谢你愿意改进 AwareLab。这是一个会采集真实凭据的工具，所以贡献的门槛比普通项目
 多一层：**先说清楚你要解决的问题，再动手**。
 
@@ -30,20 +32,26 @@
 
 ## 本地版本管理
 
-仓库就在本机，不依赖远端：`main` 始终可运行，改动走短分支，验证绿了再合并。
+主开发分支是 `v2.x`（Gitee 与 GitHub 的 `master` 跟随它快进），不依赖远端也能跑：分支始终可运行，
+改动走短分支，验证绿了再合并。
 
 ```bash
 git switch -c feat/sms-login        # 一个改动一个分支，名字用 feat/ fix/ docs/ 前缀
 # ...改代码、跑 lint 与 selftest...
-git add -A && git commit            # 提交信息第一行写"做了什么"，正文写"为什么"
-git switch main && git merge --no-ff feat/sms-login
-git tag -a v1.5.0 -m "账号体系 + 短信认证"   # 每次对外可用就打个注释标签
+git add -A && git commit -m "feat(sms): 短信验码失败计数与限速 (v2.5.5)"
+git switch v2.x && git merge --no-ff feat/sms-login
+git tag -a v2.5.5 -m "AwareLab v2.5.5"      # 每次对外可用就打个注释标签
 ```
 
-- 提交信息用中文，第一行不超过 50 字；`fix:` / `feat:` / `docs:` / `chore:` 前缀可选，
+- **提交信息必须带版本号**（硬性要求）：第一行末尾用 `(v2.5.5)` 标出这次提交对应的版本，
+  格式 `<type>(<scope>): <做了什么> (v<版本>)`，例如
+  `fix(mail): 沙箱转正式能重新入队 (v2.5.4)`、`docs: 精简过时文档并补部署形态 (v2.5.5)`。
+  版本号与 `server/package.json` 一致；改版本号的那次提交写新版本号。
+  这样 `git log --oneline` 一眼就能看出"这行代码是哪个版本"。
+- 提交信息用中文，第一行不超过 60 字；`fix:` / `feat:` / `docs:` / `chore:` 前缀可选，
   但同一次提交只做一件事（改版式就别顺手改协议）。
 - 发布前跑一遍 `node server/scripts/ci.mjs`；只改文档的提交至少跑 `git diff --check`。
-- `server/config.yaml`、`server/data/`、`web/dist/`、`*.log` 与 `.verify-*` 都在 `.gitignore` 里，
+- `server/config.yaml`、`server/data/`、`web/dist/`、`dist/`、`*.log` 与 `.verify-*` 都在 `.gitignore` 里，
   `git status` 里看到它们说明忽略规则被改坏了，先修 `.gitignore` 再提交。
 - 需要长期留档的演练数据不要塞进仓库：导出 CSV/报告后放仓库外，仓库只放代码与文档。
 
